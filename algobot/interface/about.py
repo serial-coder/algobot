@@ -1,8 +1,9 @@
 import os
 
-from helpers import ROOT_DIR
 from PyQt5 import uic
 from PyQt5.QtWidgets import QDialog
+
+from algobot.helpers import ROOT_DIR
 
 aboutUi = os.path.join(ROOT_DIR, 'UI', 'about.ui')
 

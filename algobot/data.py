@@ -1,14 +1,16 @@
+import os
 import sqlite3
 import time
-import os
-
-from datetime import timedelta, timezone, datetime
-from helpers import get_logger, ROOT_DIR, get_ups_and_downs
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
+from typing import List, Tuple
+
 from binance.client import Client
 from binance.helpers import interval_to_milliseconds
-from algorithms import get_sma, get_wma, get_ema
-from typing import List
+
+from algobot.algorithms import get_ema, get_sma, get_wma
+from algobot.helpers import ROOT_DIR, get_logger, get_ups_and_downs
+from algobot.typeHints import DATA_TYPE
 
 
 class Data:
@@ -26,9 +28,9 @@ class Data:
         :param: caller: Caller of callback (if passed).
         """
         self.callback = callback  # Used to emit signals to GUI if provided.
-        self.caller = caller  # Used to specify which caller emitted signals.
-        self.binanceClient = Client()  # Initialize Binance client.
-        self.logger = self.get_logging_object(log=log, logFile=logFile, logObject=logObject)
+        self.caller = caller  # Used to specify which caller emitted signals for GUI.
+        self.binanceClient = Client()  # Initialize Binance client to retrieve data.
+        self.logger = self.get_logging_object(enable_logging=log, logFile=logFile, loggerObject=logObject)
         self.validate_interval(interval)  # Validate the interval provided.
         self.interval = interval  # Interval to trade in.
         self.intervalUnit, self.intervalMeasurement = self.get_interval_unit_and_measurement()
@@ -38,9 +40,9 @@ class Data:
         self.downloadCompleted = False  # Boolean to determine whether data download is completed or not.
         self.downloadLoop = True  # Boolean to determine whether data is being downloaded or not.
 
-        symbol = symbol.upper()
-        self.validate_symbol(symbol)  # Validate symbol.
-        self.symbol = symbol  # Symbol of data being used.
+        self.tickers = self.binanceClient.get_all_tickers()  # A list of all the tickers on Binance.
+        self.symbol = symbol.upper()  # Symbol of data being used.
+        self.validate_symbol(self.symbol)  # Validate symbol.
         self.data = []  # Total bot data.
         self.ema_dict = {}  # Cached past EMA data for memoization.
         self.rsi_data = {}  # Cached past RSI data for memoization.
@@ -66,21 +68,21 @@ class Data:
             self.load_data(update=updateData)
 
     @staticmethod
-    def get_logging_object(log: bool, logFile: str, logObject):
+    def get_logging_object(enable_logging: bool, logFile: str, loggerObject):
         """
         Returns a logger object.
-        :param log: Boolean that determines where logging is enabled or not.
+        :param enable_logging: Boolean that determines where logging is enabled or not.
         :param logFile: File to log to.
-        :param logObject: Log object to return if there is one already specified.
+        :param loggerObject: Logger object to return if there is one already specified.
         :return: Logger object or None.
         """
-        if logObject:
-            return logObject
+        if loggerObject:
+            return loggerObject
         else:
-            if not log:
-                return None
+            if enable_logging:
+                return get_logger(logFile=logFile, loggerName=logFile)
             else:
-                return get_logger(logFile, logFile)
+                return None
 
     def validate_interval(self, interval: str):
         """
@@ -137,18 +139,16 @@ class Data:
         Retrieves database file path.
         :return: Database file path.
         """
-        currentPath = os.getcwd()
-        os.chdir(ROOT_DIR)
-        if not os.path.exists('Databases'):
-            os.mkdir('Databases')
+        database_folder = os.path.join(ROOT_DIR, 'Databases')
+        if not os.path.exists(database_folder):
+            os.mkdir(database_folder)
 
-        filePath = os.path.join(os.getcwd(), 'Databases', f'{self.symbol}.db')
-        os.chdir(currentPath)
+        filePath = os.path.join(database_folder, f'{self.symbol}.db')
         return filePath
 
     def create_table(self):
         """
-        Creates a new table with interval if it does not exist
+        Creates a new table with interval if it does not exist.
         """
         with closing(sqlite3.connect(self.databaseFile)) as connection:
             with closing(connection.cursor()) as cursor:
@@ -176,7 +176,7 @@ class Data:
             totalData = self.data
 
         query = f'''INSERT INTO {self.databaseTable} (date_utc, open_price, high_price, low_price, close_price,
-                            volume, quote_asset_volume, number_of_trades, taker_buy_base_asset, taker_buy_quote_asset) 
+                    volume, quote_asset_volume, number_of_trades, taker_buy_base_asset, taker_buy_quote_asset)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);'''
         with closing(sqlite3.connect(self.databaseFile)) as connection:
             with closing(connection.cursor()) as cursor:
@@ -221,7 +221,7 @@ class Data:
         with closing(sqlite3.connect(self.databaseFile)) as connection:
             with closing(connection.cursor()) as cursor:
                 rows = cursor.execute(f'''
-                        SELECT "date_utc", "open_price", "high_price", "low_price", "close_price", "volume", 
+                        SELECT "date_utc", "open_price", "high_price", "low_price", "close_price", "volume",
                         "quote_asset_volume", "number_of_trades", "taker_buy_base_asset", "taker_buy_quote_asset"
                         FROM {self.databaseTable} ORDER BY date_utc DESC
                         ''').fetchall()
@@ -353,8 +353,8 @@ class Data:
         if locked:
             locked.emit()
 
-        if removeFirst:
-            output_data = output_data[:-1]
+        if removeFirst:  # This should be refactored once data is inserted in the reverse order.
+            output_data.pop()
 
         progress_callback.emit(95, "Saving data...", caller)
         self.insert_data(output_data)
@@ -370,7 +370,7 @@ class Data:
         self.downloadCompleted = True
         return self.data
 
-    def get_new_data(self, timestamp, limit: int = 1000) -> list:
+    def get_new_data(self, timestamp: int, limit: int = 1000) -> list:
         """
         Returns new data from Binance API from timestamp specified.
         :param timestamp: Initial timestamp.
@@ -381,7 +381,7 @@ class Data:
         self.downloadCompleted = True
         return newData[:-1]  # Up to -1st index, because we don't want current period data.
 
-    def is_latest_date(self, latestDate) -> bool:
+    def is_latest_date(self, latestDate: datetime) -> bool:
         """
         Checks whether the latest date available is the latest period available.
         :param latestDate: Datetime object.
@@ -423,7 +423,7 @@ class Data:
 
         self.data = temp_data + self.data
 
-    def update_data(self, verbose=False):
+    def update_data(self, verbose: bool = False):
         """
         Updates run-time data with Binance API values.
         """
@@ -486,7 +486,7 @@ class Data:
                                      'taker_buy_quote_asset': float(currentData[9]), }
             self.current_values = currentDataDictionary
             if counter > 0:
-                self.try_callback(f"Successfully reconnected.")
+                self.try_callback("Successfully reconnected.")
             return currentDataDictionary
         except Exception as e:
             sleepTime = 5 + counter * 2
@@ -497,7 +497,7 @@ class Data:
             time.sleep(sleepTime)
             return self.get_current_data(counter=counter + 1)
 
-    def try_callback(self, message):
+    def try_callback(self, message: str):
         """
         Attempts to emit a signal to the GUI that called this data object (if it was called by a GUI).
         :param message: Message to send back.
@@ -519,7 +519,7 @@ class Data:
             time.sleep(15)
             return self.get_current_price()
 
-    def get_interval_unit_and_measurement(self) -> tuple:
+    def get_interval_unit_and_measurement(self) -> Tuple[str, int]:
         """
         Returns interval unit and measurement.
         :return: A tuple with interval unit and measurement respectively.
@@ -542,7 +542,7 @@ class Data:
         else:
             raise ValueError("Invalid interval.", 4)
 
-    def create_folders_and_change_path(self, folderName):
+    def create_folders_and_change_path(self, folderName: str):
         """
         Creates appropriate folders for data storage then changes current working directory to it.
         :param folderName: Folder to create.
@@ -584,7 +584,7 @@ class Data:
 
         return path
 
-    def create_csv_file(self, descending: bool = True, armyTime: bool = True, startDate=None) -> str:
+    def create_csv_file(self, descending: bool = True, armyTime: bool = True, startDate: datetime = None) -> str:
         """
         Creates a new CSV file with current interval and returns the absolute path to file.
         :param startDate: Date to have CSV data from.
@@ -640,8 +640,7 @@ class Data:
         :param symbol: Symbol to be checked.
         :return: A boolean whether the symbol is valid or not.
         """
-        tickers = self.binanceClient.get_all_tickers()
-        for ticker in tickers:
+        for ticker in self.tickers:
             if ticker['symbol'] == symbol:
                 return True
         return False
@@ -686,7 +685,7 @@ class Data:
         self.output_message("Data has been verified to be correct.")
         return True
 
-    def get_total_non_updated_data(self) -> list:
+    def get_total_non_updated_data(self) -> DATA_TYPE:
         return [self.current_values] + self.data
 
     def get_summation(self, prices: int, parameter: str, round_value: bool = True, update: bool = True) -> float:

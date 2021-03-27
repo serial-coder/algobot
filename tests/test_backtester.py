@@ -1,13 +1,14 @@
+import os
 import unittest
-import helpers
+from datetime import datetime
+
 import pytest
 
-from traders.backtester import Backtester
-from enums import TRAILING, STOP
-from datetime import datetime
-from helpers import convert_all_dates_to_datetime
+from algobot.enums import LONG, SHORT, STOP, TRAILING
+from algobot.helpers import convert_all_dates_to_datetime, load_from_csv
+from algobot.traders.backtester import Backtester
 
-test_data = helpers.load_from_csv(path='1INCHUSDT_data_1m.csv', descending=False)
+test_data = load_from_csv(path=f'{os.path.dirname(__file__)}/1INCHUSDT_data_1m.csv', descending=False)
 convert_all_dates_to_datetime(test_data)
 
 
@@ -19,15 +20,13 @@ class TestBacktester(unittest.TestCase):
         self.backtester = Backtester(
             startingBalance=1000,
             data=test_data,
-            lossStrategy=TRAILING,
-            takeProfitType=TRAILING,
-            lossPercentage=5,
-            takeProfitPercentage=5,
             strategies=[],
             strategyInterval='15m',
             symbol="1INCHUSDT",
             marginEnabled=True,
         )
+        self.backtester.apply_take_profit_settings({'takeProfitType': TRAILING, 'takeProfitPercentage': 5})
+        self.backtester.apply_loss_settings({'lossType': TRAILING, 'lossPercentage': 5})
 
     def test_initialization(self):
         """
@@ -147,7 +146,7 @@ class TestBacktester(unittest.TestCase):
         rem = 1 - backtester.transactionFeePercentage  # Percentage of transaction left over.
 
         self.assertEqual(backtester.commissionsPaid, backtester.transactionFeePercentage * backtester.startingBalance)
-        self.assertEqual(backtester.inLongPosition, True)
+        self.assertEqual(backtester.currentPosition, LONG)
         self.assertEqual(backtester.coin, backtester.startingBalance / backtester.currentPrice * rem)
         self.assertEqual(backtester.balance, 0)
         self.assertEqual(backtester.buyLongPrice, backtester.currentPrice)
@@ -168,7 +167,7 @@ class TestBacktester(unittest.TestCase):
         backtester.sell_long("Test sell.")
 
         self.assertEqual(backtester.commissionsPaid, commission)
-        self.assertEqual(backtester.inLongPosition, False)
+        self.assertEqual(backtester.currentPosition, None)
         self.assertEqual(backtester.coin, 0)
         self.assertEqual(backtester.balance, backtester.get_net())
         self.assertEqual(backtester.trades[1]['action'], "Test sell.")
@@ -187,7 +186,7 @@ class TestBacktester(unittest.TestCase):
         balance = backtester.startingBalance + backtester.currentPrice * backtester.coinOwed - commission
 
         self.assertEqual(backtester.commissionsPaid, commission)
-        self.assertEqual(backtester.inShortPosition, True)
+        self.assertEqual(backtester.currentPosition, SHORT)
         self.assertEqual(backtester.coinOwed, backtester.startingBalance / backtester.currentPrice * rem)
         self.assertEqual(backtester.balance, balance)
         self.assertEqual(backtester.sellShortPrice, backtester.currentPrice)
@@ -208,7 +207,7 @@ class TestBacktester(unittest.TestCase):
         backtester.buy_short("Test buy short.")
 
         self.assertEqual(backtester.commissionsPaid, commission)
-        self.assertEqual(backtester.inShortPosition, False)
+        self.assertEqual(backtester.currentPosition, None)
         self.assertEqual(backtester.coinOwed, 0)
         self.assertEqual(backtester.balance, backtester.get_net())
         self.assertEqual(backtester.trades[1]['action'], "Test buy short.")
@@ -235,8 +234,8 @@ class TestBacktester(unittest.TestCase):
         """
         backtester = self.backtester
         test_counter = 3  # Don't change this.
-        backtester.set_stop_loss_counter(test_counter)
-        self.assertEqual(backtester.initialStopLossCounter, test_counter)
+        backtester.set_smart_stop_loss_counter(test_counter)
+        self.assertEqual(backtester.smartStopLossInitialCounter, test_counter)
 
         backtester.set_priced_current_price_and_period(5)
         backtester.buy_long("Dummy purchase to test smart stop loss.")
@@ -244,36 +243,36 @@ class TestBacktester(unittest.TestCase):
         backtester.main_logic()  # Stop loss triggered.
         backtester.set_priced_current_price_and_period(5)
         backtester.main_logic()  # Smart stop loss purchase.
-        self.assertEqual(backtester.stopLossCounter, test_counter - 1)
+        self.assertEqual(backtester.smartStopLossCounter, test_counter - 1)
 
         backtester.set_priced_current_price_and_period(3)
         backtester.main_logic()  # Stop loss triggered.
         backtester.set_priced_current_price_and_period(6)
         backtester.main_logic()  # Smart stop loss purchase.
-        self.assertEqual(backtester.stopLossCounter, test_counter - 2)
+        self.assertEqual(backtester.smartStopLossCounter, test_counter - 2)
 
         backtester.set_priced_current_price_and_period(2)
         backtester.main_logic()  # Stop loss triggered.
         backtester.set_priced_current_price_and_period(1.9)
         backtester.main_logic()  # No smart stop loss purchase.
-        self.assertEqual(backtester.stopLossCounter, test_counter - 2)
+        self.assertEqual(backtester.smartStopLossCounter, test_counter - 2)
 
         backtester.set_priced_current_price_and_period(10)
         backtester.main_logic()  # Smart stop loss purchase.
-        self.assertEqual(backtester.stopLossCounter, test_counter - 3)
+        self.assertEqual(backtester.smartStopLossCounter, test_counter - 3)
 
         backtester.set_priced_current_price_and_period(1)
         backtester.main_logic()  # Stop loss triggered.
-        backtester.stopLossCounter = 0  # Set stop loss counter at 0, so bot can't reenter.
+        backtester.smartStopLossCounter = 0  # Set stop loss counter at 0, so bot can't reenter.
         backtester.set_priced_current_price_and_period(150)  # Set exorbitant price but don't let bot reenter.
         backtester.main_logic()  # Should not reenter as counter is 0.
-        self.assertEqual(backtester.inLongPosition, False)
-        self.assertEqual(backtester.stopLossCounter, 0)
+        self.assertEqual(backtester.currentPosition, None)
+        self.assertEqual(backtester.smartStopLossCounter, 0)
 
         backtester.reset_smart_stop_loss()  # Counter is reset.
         backtester.main_logic()  # Should reenter.
-        self.assertEqual(backtester.inLongPosition, True)
-        self.assertEqual(backtester.stopLossCounter, backtester.initialStopLossCounter - 1)
+        self.assertEqual(backtester.currentPosition, LONG)
+        self.assertEqual(backtester.smartStopLossCounter, backtester.smartStopLossInitialCounter - 1)
 
     def test_long_stop_loss(self):
         """

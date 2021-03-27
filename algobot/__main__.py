@@ -1,35 +1,40 @@
-import time
-import assets
-import sys
 import os
+import sys
+import time
 import webbrowser
-
-from typing import List, Dict, Union
-from helpers import ROOT_DIR, open_file_or_folder, get_logger, create_folder_if_needed
-from threads import workerThread, backtestThread, botThread, listThread
-from data import Data
 from datetime import datetime
-from interface.palettes import *
-from traders.backtester import Backtester
-from traders.realtrader import RealTrader
-from traders.simulationtrader import SimulationTrader
-from option import Option
-from enums import *
-from interface.configuration import Configuration
-from interface.otherCommands import OtherCommands
-from interface.about import About
-from interface.statistics import Statistics
-from scrapeNews import scrape_news
-from algodict import get_interface_dictionary
+from typing import Dict, List, Union
 
 from PyQt5 import uic
-from PyQt5.QtWidgets import QMainWindow, QApplication, QMessageBox, QTableWidgetItem, QFileDialog
-from PyQt5.QtCore import QThreadPool, QRunnable
+from PyQt5.QtCore import QRunnable, QThreadPool
 from PyQt5.QtGui import QIcon, QTextCursor
-from pyqtgraph import mkPen, PlotWidget, InfiniteLine
+from PyQt5.QtWidgets import (QApplication, QFileDialog, QMainWindow,
+                             QMessageBox, QTableWidgetItem)
+from pyqtgraph import InfiniteLine, PlotWidget, mkPen
+
+import algobot.assets
+from algobot.algodict import get_interface_dictionary
+from algobot.data import Data
+from algobot.enums import (AVG_GRAPH, BACKTEST, LIVE, LONG, NET_GRAPH, SHORT,
+                           SIMULATION)
+from algobot.helpers import (ROOT_DIR, create_folder_if_needed, get_logger,
+                             open_file_or_folder)
+from algobot.interface.about import About
+from algobot.interface.configuration import Configuration
+from algobot.interface.otherCommands import OtherCommands
+from algobot.interface.palettes import (bloomberg_palette, dark_palette,
+                                        green_palette, light_palette,
+                                        red_palette)
+from algobot.interface.statistics import Statistics
+from algobot.option import Option
+from algobot.scrapeNews import scrape_news
+from algobot.threads import backtestThread, botThread, listThread, workerThread
+from algobot.traders.backtester import Backtester
+from algobot.traders.realtrader import RealTrader
+from algobot.traders.simulationtrader import SimulationTrader
 
 app = QApplication(sys.argv)
-mainUi = os.path.join('../', 'UI', 'algobot.ui')
+mainUi = os.path.join(ROOT_DIR, 'UI', 'algobot.ui')
 
 
 class Interface(QMainWindow):
@@ -39,7 +44,7 @@ class Interface(QMainWindow):
     """
 
     def __init__(self, parent=None):
-        assets.qInitResources()
+        algobot.assets.qInitResources()
         super(Interface, self).__init__(parent)  # Initializing object
         uic.loadUi(mainUi, self)  # Loading the main UI
         self.logger = get_logger(logFile='algobot', loggerName='algobot')
@@ -223,7 +228,7 @@ class Interface(QMainWindow):
         fileName = fileName if fileName != '' else None
 
         if not fileName:
-            self.add_to_backtest_monitor(f'Ended backtest.')
+            self.add_to_backtest_monitor('Ended backtest.')
         else:
             path = self.backtester.write_results(resultFile=fileName)
             self.add_to_backtest_monitor(f'Ended backtest and saved results to {path}.')
@@ -809,11 +814,11 @@ class Interface(QMainWindow):
         """
         self.advancedLogging = boolean
         if self.advancedLogging:
-            self.add_to_live_activity_monitor(f'Logging method has been changed to advanced.')
-            self.add_to_simulation_activity_monitor(f'Logging method has been changed to advanced.')
+            self.add_to_live_activity_monitor('Logging method has been changed to advanced.')
+            self.add_to_simulation_activity_monitor('Logging method has been changed to advanced.')
         else:
-            self.add_to_live_activity_monitor(f'Logging method has been changed to simple.')
-            self.add_to_simulation_activity_monitor(f'Logging method has been changed to simple.')
+            self.add_to_live_activity_monitor('Logging method has been changed to simple.')
+            self.add_to_simulation_activity_monitor('Logging method has been changed to simple.')
 
     def set_custom_stop_loss(self, caller, enable: bool = True, foreignValue: float or None = None):
         """
@@ -838,7 +843,7 @@ class Interface(QMainWindow):
             trader.customStopLoss = None
             mainDict['enableCustomStopLossButton'].setEnabled(True)
             mainDict['disableCustomStopLossButton'].setEnabled(False)
-            self.add_to_monitor(caller, f'Removed custom stop loss.')
+            self.add_to_monitor(caller, 'Removed custom stop loss.')
 
     def get_loss_settings(self, caller) -> dict:
         """
@@ -1556,7 +1561,7 @@ class Interface(QMainWindow):
         """
         Switches interface to a dark theme.
         """
-        app.setPalette(get_dark_palette())
+        app.setPalette(dark_palette())
         for graph in self.graphs:
             graph = graph['graph']
             graph.setBackground('k')
@@ -1565,7 +1570,7 @@ class Interface(QMainWindow):
         """
         Switches interface to a light theme.
         """
-        app.setPalette(get_light_palette())
+        app.setPalette(light_palette())
         for graph in self.graphs:
             graph = graph['graph']
             graph.setBackground('w')
@@ -1574,7 +1579,7 @@ class Interface(QMainWindow):
         """
         Switches interface to bloomberg theme.
         """
-        app.setPalette(get_bloomberg_palette())
+        app.setPalette(bloomberg_palette())
         for graph in self.graphs:
             graph = graph['graph']
             graph.setBackground('k')
@@ -1583,7 +1588,7 @@ class Interface(QMainWindow):
         """
         Sets bear mode color theme. Theme is red and black mimicking a red day.
         """
-        app.setPalette(get_red_palette())
+        app.setPalette(red_palette())
         for graph in self.graphs:
             graph = graph['graph']
             graph.setBackground('k')
@@ -1592,7 +1597,7 @@ class Interface(QMainWindow):
         """
         Sets bull mode color theme. Theme is green and black mimicking a green day.
         """
-        app.setPalette(get_green_palette())
+        app.setPalette(green_palette())
         for graph in self.graphs:
             graph = graph['graph']
             graph.setBackground('k')

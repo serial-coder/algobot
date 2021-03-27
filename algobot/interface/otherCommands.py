@@ -1,14 +1,14 @@
 import os
-import helpers
-
 from datetime import datetime, timezone
+
 from PyQt5 import uic
-from PyQt5.QtCore import QThreadPool, QDate
+from PyQt5.QtCore import QDate, QThreadPool
 from PyQt5.QtWidgets import QDialog, QMessageBox
 
-from threads.downloadThread import DownloadThread
-from threads.listThread import Worker
-from data import Data
+import algobot.helpers as helpers
+from algobot.data import Data
+from algobot.threads.downloadThread import DownloadThread
+from algobot.threads.listThread import Worker
 
 otherCommandsUi = os.path.join(helpers.ROOT_DIR, 'UI', 'otherCommands.ui')
 

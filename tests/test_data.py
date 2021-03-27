@@ -1,5 +1,6 @@
 import unittest
-from data import Data
+
+from algobot.data import Data
 
 
 class MyTestCase(unittest.TestCase):

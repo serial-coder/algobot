@@ -4,7 +4,8 @@ Please make sure that they have some default values for the GUI to initialize th
 """
 
 from typing import List, Union
-from data import Data
+
+from algobot.data import Data
 
 
 class Strategy:
@@ -32,10 +33,16 @@ class Strategy:
         raise NotImplementedError("Implement a strategy to get trend.")
 
     def get_params(self) -> list:
+        """
+        This function should return the parameters of the strategy being used.
+        """
         raise NotImplementedError("Implement a function to return parameters.")
 
     @staticmethod
     def get_param_types():
+        """
+        This function should return the parameter types of the strategy being used for the GUI to initialize them.
+        """
         raise NotImplementedError("Implement a function to return input types.")
 
     def reset_strategy_dictionary(self):
@@ -45,6 +52,11 @@ class Strategy:
         self.strategyDict = {}
 
     def get_appropriate_dictionary(self, data: Union[list, Data]) -> dict:
+        """
+        Returns dictionary regarding the strategy. If the data type is a list, it's a backtester, so we just return
+        the strategy dict; if it's a Data type that's equal to the parent's data-view, then return the strategy dict;
+        finally, if none of them are selected, then it's most likely the lower interval's dictionary.
+        """
         if type(data) == list:
             return self.strategyDict
         elif type(data) == Data:
@@ -53,7 +65,10 @@ class Strategy:
             else:
                 return self.lowerIntervalDict
         else:
-            raise ValueError("invalid type of data object.")
+            raise ValueError("Invalid type of data object.")
 
     def get_min_option_period(self):
+        """
+        This function should return the minimum amount of periods required to get a trend.
+        """
         pass

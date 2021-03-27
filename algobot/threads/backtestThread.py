@@ -1,8 +1,10 @@
 from datetime import datetime
-from typing import Dict, Any
-from traders.backtester import Backtester
-from enums import BACKTEST, TRAILING
-from PyQt5.QtCore import QObject, pyqtSignal, QRunnable, pyqtSlot
+from typing import Any, Dict
+
+from PyQt5.QtCore import QObject, QRunnable, pyqtSignal, pyqtSlot
+
+from algobot.enums import BACKTEST, TRAILING
+from algobot.traders.backtester import Backtester
 
 
 class BacktestSignals(QObject):
@@ -32,21 +34,13 @@ class BacktestThread(QRunnable):
         :return: GUI configuration details in a dictionary.
         """
         config = self.gui.configuration
-        gui = self.gui
         startDate, endDate = config.get_calendar_dates()
-        lossDict = gui.get_loss_settings(BACKTEST)
-        takeProfitDict = gui.configuration.get_take_profit_settings(BACKTEST)
 
         return {
             'startingBalance': config.backtestStartingBalanceSpinBox.value(),
             'data': config.data,
             'startDate': startDate,
             'endDate': endDate,
-            'takeProfitType': takeProfitDict['takeProfitType'],
-            'takeProfitPercentage': takeProfitDict['takeProfitPercentage'],
-            'lossStrategy': lossDict["lossType"],
-            'lossPercentage': lossDict["lossPercentage"],
-            'smartStopLossCounter': lossDict["smartStopLossCounter"],
             'dataType': config.dataType,
             'precision': config.backtestPrecisionSpinBox.value(),
             'outputTrades': config.backtestOutputTradesCheckBox.isChecked(),
@@ -117,18 +111,15 @@ class BacktestThread(QRunnable):
         self.gui.backtester = Backtester(startingBalance=configDetails['startingBalance'],
                                          data=configDetails['data'],
                                          symbol=configDetails['dataType'],
-                                         lossStrategy=configDetails['lossStrategy'],
-                                         lossPercentage=configDetails['lossPercentage'],
                                          marginEnabled=configDetails['marginEnabled'],
                                          startDate=configDetails['startDate'],
                                          endDate=configDetails['endDate'],
                                          precision=configDetails['precision'],
                                          outputTrades=configDetails['outputTrades'],
                                          strategies=configDetails['strategies'],
-                                         takeProfitType=configDetails['takeProfitType'],
-                                         takeProfitPercentage=configDetails['takeProfitPercentage'],
                                          strategyInterval=configDetails['strategyInterval'])
-        self.gui.backtester.set_stop_loss_counter(configDetails['smartStopLossCounter'])
+        self.gui.backtester.apply_take_profit_settings(self.gui.configuration.get_take_profit_settings(BACKTEST))
+        self.gui.backtester.apply_loss_settings(self.gui.get_loss_settings(BACKTEST))
         self.signals.started.emit(self.get_configuration_dictionary_for_gui())
 
     def stop(self):

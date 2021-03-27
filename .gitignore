@@ -1,0 +1,25 @@
+# IDE
+/.idea/
+
+# Python
+__pycache__/
+/.venv/
+/venv/
+
+# Project
+/Backtest Results/
+/Configuration/
+/Credentials/
+/CSV/
+/Databases/
+/Logs/
+/other/
+/Trade History/
+
+# Strategies
+/algobot/strategies
+!algobot/strategies/movingAverage.py
+!algobot/strategies/strategy.py
+
+# Miscellaneous
+state.json
