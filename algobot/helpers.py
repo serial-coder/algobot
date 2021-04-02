@@ -9,13 +9,75 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Union
 
 from dateutil import parser
+from PyQt5.QtWidgets import QTableWidget, QTableWidgetItem
 
-from algobot.option import Option
-from algobot.typeHints import DICT_TYPE
+from algobot.enums import BACKTEST, LIVE, SIMULATION
+from algobot.typing_hints import DICT_TYPE
 
 BASE_DIR = os.path.dirname(__file__)
 ROOT_DIR = os.path.dirname(BASE_DIR)
 LOG_FOLDER = 'Logs'
+
+
+def add_to_table(table: QTableWidget, data: list, insertDate=True):
+    """
+    Function that will add specified data to a provided table.
+    :param insertDate: Boolean to add date to 0th index of data or not.
+    :param table: Table we will add data to.
+    :param data: Data we will add to table.
+    """
+    rowPosition = table.rowCount()
+    columns = table.columnCount()
+
+    if insertDate:
+        data.insert(0, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    if len(data) != columns:
+        raise ValueError('Data needs to have the same amount of columns as table.')
+
+    table.insertRow(rowPosition)
+    for column in range(0, columns):
+        table.setItem(rowPosition, column, QTableWidgetItem(str(data[column])))
+
+
+def clear_table(table: QTableWidget):
+    """
+    Sets table row count to 0.
+    :param table: Table which is to be cleared.
+    """
+    table.setRowCount(0)
+
+
+def open_folder(folder: str):
+    targetPath = create_folder(folder)
+    open_file_or_folder(targetPath)
+
+
+def create_folder(folder: str):
+    targetPath = os.path.join(ROOT_DIR, folder)
+    create_folder_if_needed(targetPath)
+
+    return targetPath
+
+
+def create_folder_if_needed(targetPath: str, basePath: str = None) -> bool:
+    """
+    This function will create the appropriate folders in the root folder if needed.
+    :param targetPath: Target path to have exist.
+    :param basePath: Base path to start from. If none, it'll be the root directory.
+    :return: Boolean whether folder was created or not.
+    """
+    if not basePath:
+        basePath = ROOT_DIR
+
+    if not os.path.exists(targetPath):
+        folder = os.path.basename(targetPath)
+        cur_path = os.getcwd()
+        os.chdir(basePath)
+        os.mkdir(folder)
+        os.chdir(cur_path)
+        return True
+    return False
 
 
 def open_file_or_folder(targetPath: str):
@@ -29,29 +91,6 @@ def open_file_or_folder(targetPath: str):
         subprocess.Popen(["open", targetPath])
     else:
         subprocess.Popen(["xdg-open", targetPath])
-
-
-def get_ups_and_downs(data: List[Dict[str, float]], parameter: str) -> Tuple[list, list]:
-    """
-    Returns lists of ups and downs from given data and parameter.
-    :param data: List of dictionaries from which we get the ups and downs.
-    :param parameter: Parameter from which data is retrieved.
-    :return: Tuple of list of ups and downs.
-    """
-    ups = [0]
-    downs = [0]
-    previous = data[0]
-
-    for period in data[1:]:
-        if period[parameter] > previous[parameter]:
-            ups.append(period[parameter] - previous[parameter])
-            downs.append(0)
-        else:
-            ups.append(0)
-            downs.append(previous[parameter] - period[parameter])
-        previous = period
-
-    return ups, downs
 
 
 def setup_and_return_log_path(fileName: str) -> str:
@@ -79,25 +118,6 @@ def setup_and_return_log_path(fileName: str) -> str:
     return fullPath
 
 
-def get_logger(logFile: str, loggerName: str) -> logging.Logger:
-    """
-    Returns a logger object with loggerName provided and that'll log to logFile.
-    :param logFile: File to log to.
-    :param loggerName: Name logger will have.
-    :return: A logger object.
-    """
-    logger = logging.getLogger(loggerName)
-    logger.setLevel(logging.INFO)
-
-    c_formatter = logging.Formatter('%(message)s')
-    f_handler = logging.FileHandler(filename=setup_and_return_log_path(fileName=logFile), delay=True)
-    # f_handler.setLevel(logging.INFO)
-    f_handler.setFormatter(c_formatter)
-
-    logger.addHandler(f_handler)
-    return logger
-
-
 def initialize_logger():
     """
     Initializes logger. THIS FUNCTION IS OFFICIALLY DEPRECATED.
@@ -120,34 +140,97 @@ def initialize_logger():
     os.chdir(curPath)
 
 
-def parse_strategy_name(name: str) -> str:
+def get_logger(logFile: str, loggerName: str) -> logging.Logger:
     """
-    Parses strategy name for use with strategies.
-    :param name: Name of strategy to be parsed.
-    :return: Parsed strategy name.
+    Returns a logger object with loggerName provided and that'll log to logFile.
+    :param logFile: File to log to.
+    :param loggerName: Name logger will have.
+    :return: A logger object.
     """
-    nameList = name.split()
-    remainingList = nameList[1:]
+    logger = logging.getLogger(loggerName)
+    logger.setLevel(logging.INFO)
 
-    nameList = [nameList[0].lower()]
-    for name in remainingList:
-        nameList.append(name.capitalize())
+    c_formatter = logging.Formatter('%(message)s')
+    f_handler = logging.FileHandler(filename=setup_and_return_log_path(fileName=logFile), delay=True)
+    # f_handler.setLevel(logging.INFO)
+    f_handler.setFormatter(c_formatter)
 
-    return ''.join(nameList)
+    logger.addHandler(f_handler)
+    return logger
 
 
-def set_up_strategies(trader, strategies: List[tuple]):
-    for strategyTuple in strategies:
-        strategyClass = strategyTuple[0]
-        values = strategyTuple[1]
-        name = parse_strategy_name(strategyTuple[2])
+def get_ups_and_downs(data: List[Dict[str, float]], parameter: str) -> Tuple[list, list]:
+    """
+    Returns lists of ups and downs from given data and parameter.
+    :param data: List of dictionaries from which we get the ups and downs.
+    :param parameter: Parameter from which data is retrieved.
+    :return: Tuple of list of ups and downs.
+    """
+    ups = [0]
+    downs = [0]
+    previous = data[0]
 
-        if name != 'movingAverage':
-            trader.strategies[name] = strategyClass(trader, inputs=values, precision=trader.precision)
+    for period in data[1:]:
+        if period[parameter] > previous[parameter]:
+            ups.append(period[parameter] - previous[parameter])
+            downs.append(0)
         else:
-            values = [Option(*values[x:x + 4]) for x in range(0, len(values), 4)]
-            trader.strategies[name] = strategyClass(trader, inputs=values, precision=trader.precision)
-            trader.minPeriod = trader.strategies[name].get_min_option_period()
+            ups.append(0)
+            downs.append(previous[parameter] - period[parameter])
+        previous = period
+
+    return ups, downs
+
+
+def get_elapsed_time(startingTime: float) -> str:
+    """
+    Returns elapsed time in human readable format subtracted from starting time.
+    :param startingTime: Starting time to subtract from current time.
+    :return: Human readable string representing elapsed time.
+    """
+    seconds = int(time.time() - startingTime)
+    if seconds <= 60:
+        return f'{seconds} seconds'
+    elif seconds <= 3600:
+        minutes = seconds // 60
+        seconds = seconds % 60
+        return f'{minutes}m {seconds}s'
+    else:
+        hours = seconds // 3600
+        seconds = seconds % 3600
+        minutes = seconds // 60
+        seconds = seconds % 60
+        return f'{hours}h {minutes}m {seconds}s'
+
+
+def get_data_from_parameter(data: DICT_TYPE, parameter: str) -> float:
+    """
+    Helper function for trading. Will return appropriate data from parameter passed in.
+    :param data: Dictionary data with parameters.
+    :param parameter: Data parameter to return.
+    :return: Appropriate data to return.
+    """
+    if parameter == 'high/low':
+        return (data['high'] + data['low']) / 2
+    elif parameter == 'open/close':
+        return (data['open'] + data['close']) / 2
+    else:
+        return data[parameter]
+
+
+def get_caller_string(caller: int):
+    """
+    Returns the string of the caller provided. This should be changed to enums soon.
+    :param caller: Caller enum.
+    """
+    if caller == LIVE:
+        return 'live'
+    elif caller == SIMULATION:
+        return 'simulation'
+    elif caller == BACKTEST:
+        return 'backtest'
+    else:
+        raise ValueError("Invalid type of caller specified.")
 
 
 def get_label_string(label: str) -> str:
@@ -169,6 +252,10 @@ def get_label_string(label: str) -> str:
 
 
 def get_interval_minutes(interval: str) -> int:
+    """
+    Returns amount of minutes from interval provided.
+    :param interval: Interval to get the amount of minutes of.
+    """
     intervals = {
         '12 Hours': 720,
         '15 Minutes': 15,
@@ -206,6 +293,22 @@ def get_interval_strings(startingIndex: int = 0) -> List[str]:
             '12 Hours',
             '1 Day',
             '3 Days'][startingIndex:]
+
+
+def parse_strategy_name(name: str) -> str:
+    """
+    Parses strategy name for use with strategies.
+    :param name: Name of strategy to be parsed.
+    :return: Parsed strategy name.
+    """
+    nameList = name.split()
+    remainingList = nameList[1:]
+
+    nameList = [nameList[0].lower()]
+    for name in remainingList:
+        nameList.append(name.capitalize())
+
+    return ''.join(nameList)
 
 
 def convert_small_interval(interval: str) -> str:
@@ -266,62 +369,6 @@ def convert_all_dates_to_datetime(data: List[Dict[str, Union[float, str, datetim
 
     for entry in data:
         entry['date_utc'] = parser.parse(entry['date_utc'])
-
-
-def get_elapsed_time(startingTime: float) -> str:
-    """
-    Returns elapsed time in human readable format subtracted from starting time.
-    :param startingTime: Starting time to subtract from current time.
-    :return: Human readable string representing elapsed time.
-    """
-    seconds = int(time.time() - startingTime)
-    if seconds <= 60:
-        return f'{seconds} seconds'
-    elif seconds <= 3600:
-        minutes = seconds // 60
-        seconds = seconds % 60
-        return f'{minutes}m {seconds}s'
-    else:
-        hours = seconds // 3600
-        seconds = seconds % 3600
-        minutes = seconds // 60
-        seconds = seconds % 60
-        return f'{hours}h {minutes}m {seconds}s'
-
-
-def create_folder_if_needed(targetPath: str, basePath: str = None) -> bool:
-    """
-    This function will create the appropriate folders in the root folder if needed.
-    :param targetPath: Target path to have exist.
-    :param basePath: Base path to start from. If none, it'll be the root directory.
-    :return: Boolean whether folder was created or not.
-    """
-    if not basePath:
-        basePath = ROOT_DIR
-
-    if not os.path.exists(targetPath):
-        folder = os.path.basename(targetPath)
-        cur_path = os.getcwd()
-        os.chdir(basePath)
-        os.mkdir(folder)
-        os.chdir(cur_path)
-        return True
-    return False
-
-
-def get_data_from_parameter(data: DICT_TYPE, parameter: str) -> float:
-    """
-    Helper function for trading. Will return appropriate data from parameter passed in.
-    :param data: Dictionary data with parameters.
-    :param parameter: Data parameter to return.
-    :return: Appropriate data to return.
-    """
-    if parameter == 'high/low':
-        return (data['high'] + data['low']) / 2
-    elif parameter == 'open/close':
-        return (data['open'] + data['close']) / 2
-    else:
-        return data[parameter]
 
 
 def load_from_csv(path: str, descending: bool = True) -> list:

@@ -4,9 +4,8 @@ from threading import Lock
 from typing import Union
 
 from algobot.data import Data
-from algobot.enums import BEARISH, BULLISH, LONG, SHORT, STOP, TRAILING
-from algobot.helpers import (convert_small_interval, get_logger,
-                             set_up_strategies)
+from algobot.enums import BEARISH, BULLISH, LONG, SHORT
+from algobot.helpers import convert_small_interval, get_logger
 from algobot.traders.trader import Trader
 
 
@@ -37,33 +36,15 @@ class SimulationTrader(Trader):
                                    updateData=updateData, logObject=self.logger, precision=precision)
         self.binanceClient = self.dataView.binanceClient  # Retrieve Binance client.
         self.symbol = self.dataView.symbol  # Retrieve symbol from data-view object.
-
-        self.previousNet = self.balance  # Our previous net will just be the starting balance in the beginning.
         self.coinName = self.get_coin_name()  # Retrieve primary coin to trade.
         self.commissionPaid = 0  # Total commission paid to broker.
-        self.dailyChangeNets = []  # Daily change net list. Will contain list of all nets.
-
         self.completedLoop = True  # Loop that'll keep track of bot. We wait for this to turn False before some action.
-        self.lock = Lock()  # Lock to ensure a transaction doesn't occur when another one is taking place.
-        self.addTradeCallback = addTradeCallback
-
-        self.customStopLoss = None  # Custom stop loss to use if we want to exit trade before trailing or stop loss.
-        self.stopLoss = None  # Price at which bot will exit trade due to stop loss limits.
-        self.smartStopLossEnter = False  # Boolean that'll determine whether current position is from a smart stop loss.
-        self.scheduledSafetyTimer = None  # Next time to check if it's a true stop loss.
-
         self.inHumanControl = False  # Boolean that keeps track of whether human or bot controls transactions.
-        self.trend = None
-
+        self.lock = Lock()  # Lock to ensure a transaction doesn't occur when another one is taking place.
+        self.addTradeCallback = addTradeCallback  # Callback for GUI to add trades.
+        self.dailyChangeNets = []  # Daily change net list. Will contain list of all nets.
         self.optionDetails = []  # Current option values. Holds most recent option values.
         self.lowerOptionDetails = []  # Lower option values. Holds lower interval option values (if exist).
-
-    def setup_strategies(self, strategies: list):
-        """
-        Sets up strategies from list of strategies provided.
-        :param strategies: List of strategies to set up and apply to bot.
-        """
-        set_up_strategies(self, strategies)
 
     def output_message(self, message: str, level: int = 2, printMessage: bool = False):
         """
@@ -84,6 +65,9 @@ class SimulationTrader(Trader):
             self.logger.critical(message)
 
     def get_grouped_statistics(self) -> dict:
+        """
+        Returns dictionary of grouped statistics for the statistics window in the GUI.
+        """
         groupedDict = {
             'general': {
                 'currentBalance': f'${round(self.balance, 2)}',
@@ -123,7 +107,7 @@ class SimulationTrader(Trader):
 
         if self.takeProfitType is not None:
             groupedDict['takeProfit'] = {
-                'takeProfitType': self.get_trailing_or_stop_loss_string(self.takeProfitType),
+                'takeProfitType': self.get_trailing_or_stop_type_string(self.takeProfitType),
                 'takeProfitPercentage': self.get_safe_rounded_percentage(self.takeProfitPercentageDecimal),
                 'trailingTakeProfitActivated': str(self.trailingTakeProfitActivated),
                 'takeProfitPoint': self.get_safe_rounded_string(self.takeProfitPoint),
@@ -144,55 +128,60 @@ class SimulationTrader(Trader):
                 'takerBuyQuoteAsset': str(round(self.dataView.current_values['taker_buy_quote_asset'], self.precision)),
             }
 
-        if 'movingAverage' in self.strategies:
-            strategy = self.strategies['movingAverage']
-            precise = self.precision
-            groupedDict['movingAverages'] = {
-                'trend': self.get_trend_string(strategy.trend),
-                'enabled': 'True',
-            }
-
-            for optionDetail in self.optionDetails:
-                initialAverage, finalAverage, initialAverageLabel, finalAverageLabel = optionDetail
-                groupedDict['movingAverages'][initialAverageLabel] = f'${round(initialAverage, precise)}'
-                groupedDict['movingAverages'][finalAverageLabel] = f'${round(finalAverage, precise)}'
-
-            if self.lowerOptionDetails:
-                for optionDetail in self.lowerOptionDetails:
-                    initialAverage, finalAverage, initialAverageLabel, finalAverageLabel = optionDetail
-                    groupedDict['movingAverages'][f'Lower {initialAverageLabel}'] = f'${round(initialAverage, precise)}'
-                    groupedDict['movingAverages'][f'Lower {finalAverageLabel}'] = f'${round(finalAverage, precise)}'
-
         self.add_strategy_info_to_grouped_dict(groupedDict)
         return groupedDict
 
-    def add_strategy_info_to_grouped_dict(self, groupedDict):
+    def add_strategy_info_to_grouped_dict(self, groupedDict: dict):
+        """
+        Adds strategy information to the dictionary provided.
+        :param groupedDict: Dictionary to add strategy information to.
+        """
         for strategyName, strategy in self.strategies.items():
             if strategyName == 'movingAverage':
-                continue
+                groupedDict['movingAverages'] = movingAverageDict = {
+                    'trend': self.get_trend_string(strategy.trend),
+                    'enabled': 'True',
+                }
+                for optionDetail in self.optionDetails:
+                    initialAverage, finalAverage, initialAverageLabel, finalAverageLabel = optionDetail
+                    movingAverageDict[initialAverageLabel] = f'${round(initialAverage, self.precision)}'
+                    movingAverageDict[finalAverageLabel] = f'${round(finalAverage, self.precision)}'
 
-            groupedDict[strategyName] = {
-                'trend': self.get_trend_string(strategy.trend),
-                'enabled': 'True',
-                'inputs': strategy.get_params()
-            }
+                if self.lowerOptionDetails:
+                    for optionDetail in self.lowerOptionDetails:
+                        initialAverage, finalAverage, initialAverageLabel, finalAverageLabel = optionDetail
+                        movingAverageDict[f'Lower {initialAverageLabel}'] = f'${round(initialAverage, self.precision)}'
+                        movingAverageDict[f'Lower {finalAverageLabel}'] = f'${round(finalAverage, self.precision)}'
+            else:
+                groupedDict[strategyName] = {
+                    'trend': self.get_trend_string(strategy.trend),
+                    'enabled': 'True',
+                    'inputs': strategy.get_params()
+                }
 
-            if 'values' in strategy.strategyDict:
-                for key in strategy.strategyDict['values']:
-                    groupedDict[strategyName][key] = strategy.strategyDict['values'][key]
+                if 'values' in strategy.strategyDict:
+                    for key in strategy.strategyDict['values']:
+                        value = strategy.strategyDict['values'][key]
+                        if type(value) == float:
+                            value = round(value, self.precision)
+                        groupedDict[strategyName][key] = value
 
-            for x in strategy.get_params():
-                if x in self.dataView.rsi_data:
-                    groupedDict[strategyName][f'RSI({x})'] = round(self.dataView.rsi_data[x], self.precision)
+                for x in strategy.get_params():
+                    if x in self.dataView.rsi_data:
+                        groupedDict[strategyName][f'RSI({x})'] = round(self.dataView.rsi_data[x], self.precision)
 
     def get_remaining_safety_timer(self) -> str:
+        """
+        Returns the number of seconds left before checking to see if a real stop loss has occurred.
+        """
         if not self.scheduledSafetyTimer:
             return 'None'
         else:
             remaining = int(self.scheduledSafetyTimer - time.time())
             return f'{remaining} seconds'
 
-    def add_trade(self, message: str, force: bool, orderID=None, stopLossExit=False, smartEnter=False):
+    def add_trade(self, message: str, force: bool = False, orderID: str = None, stopLossExit: bool = False,
+                  smartEnter: bool = False):
         """
         Adds a trade to list of trades
         :param smartEnter: Boolean that'll determine whether current position is entered from a smart enter or not.
@@ -221,7 +210,7 @@ class SimulationTrader(Trader):
         if self.addTradeCallback:
             try:
                 self.addTradeCallback.emit(trade)
-            except AttributeError:  # This means bots was closed with closeEvent()
+            except AttributeError:  # This means bot was closed with closeEvent()
                 pass
 
         self.trades.append(trade)
@@ -239,7 +228,7 @@ class SimulationTrader(Trader):
                             f'Percentage: {round(profitPercentage, 2)}%\n'
                             f'Profit: ${round(profit, self.precision)}\n')
 
-    def buy_long(self, msg: str, usd: float = None, force: bool = False, smartEnter=False):
+    def buy_long(self, msg: str, usd: float = None, force: bool = False, smartEnter: bool = False):
         """
         Buys coin at current market price with amount of USD specified. If not specified, assumes bot goes all in.
         Function also takes into account Binance's 0.1% transaction fee.
@@ -261,7 +250,7 @@ class SimulationTrader(Trader):
                 raise ValueError(f'You currently have ${self.balance}. You cannot invest ${usd}.')
 
             self.currentPrice = self.dataView.get_current_price()
-            transactionFee = usd * self.transactionFeePercentage
+            transactionFee = usd * self.transactionFeePercentageDecimal
             self.commissionPaid += transactionFee
             self.currentPosition = LONG
             self.buyLongPrice = self.longTrailingPrice = self.currentPrice
@@ -269,7 +258,7 @@ class SimulationTrader(Trader):
             self.balance -= usd
             self.add_trade(msg, force=force, smartEnter=smartEnter)
 
-    def sell_long(self, msg: str, coin: float = None, force: bool = False, stopLossExit=False):
+    def sell_long(self, msg: str, coin: float = None, force: bool = False, stopLossExit: bool = False):
         """
         Sells specified amount of coin at current market price. If not specified, assumes bot sells all coin.
         Function also takes into account Binance's 0.1% transaction fee.
@@ -291,8 +280,8 @@ class SimulationTrader(Trader):
                 raise ValueError(f'You have {self.coin} {self.coinName}. You cannot sell {coin} {self.coinName}.')
 
             self.currentPrice = self.dataView.get_current_price()
-            self.commissionPaid += coin * self.currentPrice * self.transactionFeePercentage
-            self.balance += coin * self.currentPrice * (1 - self.transactionFeePercentage)
+            self.commissionPaid += coin * self.currentPrice * self.transactionFeePercentageDecimal
+            self.balance += coin * self.currentPrice * (1 - self.transactionFeePercentageDecimal)
             self.currentPosition = None
             self.customStopLoss = None
             self.previousPosition = LONG
@@ -302,7 +291,7 @@ class SimulationTrader(Trader):
             if self.coin == 0:
                 self.buyLongPrice = self.longTrailingPrice = None
 
-    def buy_short(self, msg: str, coin: float = None, force: bool = False, stopLossExit=False):
+    def buy_short(self, msg: str, coin: float = None, force: bool = False, stopLossExit: bool = False):
         """
         Buys borrowed coin at current market price and returns to market.
         Function also takes into account Binance's 0.1% transaction fee.
@@ -327,14 +316,14 @@ class SimulationTrader(Trader):
             self.customStopLoss = None
             self.currentPosition = None
             self.previousPosition = SHORT
-            self.commissionPaid += self.currentPrice * coin * self.transactionFeePercentage
-            self.balance -= self.currentPrice * coin * (1 + self.transactionFeePercentage)
+            self.commissionPaid += self.currentPrice * coin * self.transactionFeePercentageDecimal
+            self.balance -= self.currentPrice * coin * (1 + self.transactionFeePercentageDecimal)
             self.add_trade(msg, force=force, stopLossExit=stopLossExit)
 
             if self.coinOwed == 0:
                 self.sellShortPrice = self.shortTrailingPrice = None
 
-    def sell_short(self, msg: str, coin: float = None, force: bool = False, smartEnter=False):
+    def sell_short(self, msg: str, coin: float = None, force: bool = False, smartEnter: bool = False):
         """
         Borrows coin and sells them at current market price.
         Function also takes into account Binance's 0.1% transaction fee.
@@ -352,15 +341,15 @@ class SimulationTrader(Trader):
             self.currentPrice = self.dataView.get_current_price()
 
             if coin is None:
-                transactionFee = self.balance * self.transactionFeePercentage
+                transactionFee = self.balance * self.transactionFeePercentageDecimal
                 coin = (self.balance - transactionFee) / self.currentPrice
 
             if coin <= 0:
                 raise ValueError(f"You cannot borrow negative {abs(coin)} {self.coinName}.")
 
             self.coinOwed += coin
-            self.commissionPaid += self.currentPrice * coin * self.transactionFeePercentage
-            self.balance += self.currentPrice * coin * (1 - self.transactionFeePercentage)
+            self.commissionPaid += self.currentPrice * coin * self.transactionFeePercentageDecimal
+            self.balance += self.currentPrice * coin * (1 - self.transactionFeePercentageDecimal)
             self.currentPosition = SHORT
             self.sellShortPrice = self.shortTrailingPrice = self.currentPrice
             self.add_trade(msg, force=force, smartEnter=smartEnter)
@@ -446,7 +435,7 @@ class SimulationTrader(Trader):
                 self.reset_smart_stop_loss()
 
     # noinspection PyTypeChecker
-    def main_logic(self, log_data=True):
+    def main_logic(self, log_data: bool = True):
         """
         Main bot logic will use to trade.
         If there is a trend and the previous position did not reflect the trend, the bot enters position.
@@ -465,113 +454,6 @@ class SimulationTrader(Trader):
         Resets smart stop loss counter.
         """
         self.smartStopLossCounter = self.smartStopLossInitialCounter
-
-    @staticmethod
-    def get_trailing_or_stop_loss_string(exitPositionType: int) -> str:
-        """
-        Returns exit position type in string format instead of integer enum.
-        :return: Exit position type in string format.
-        """
-        if exitPositionType == STOP:
-            return 'Stop'
-        elif exitPositionType == TRAILING:
-            return 'Trailing'
-        elif exitPositionType is None:
-            return 'None'
-        else:
-            raise ValueError("Unknown type of exit position type.")
-
-    def get_stop_loss_strategy_string(self) -> str:
-        """
-        Returns stop loss strategy in string format, instead of integer enum.
-        :return: Stop loss strategy in string format.
-        """
-        if self.lossStrategy == STOP:
-            return 'Stop Loss'
-        elif self.lossStrategy == TRAILING:
-            return 'Trailing Loss'
-        elif self.lossStrategy is None:
-            return 'None'
-        else:
-            raise ValueError("Unknown type of loss strategy.")
-
-    @staticmethod
-    def get_trend_string(trend) -> str:
-        """
-        Returns current market trend in a string format.
-        :param trend: Current trend enum.
-        :return: Current trend in a string format.
-        """
-        if trend == BULLISH:
-            return "Bullish"
-        elif trend == BEARISH:
-            return 'Bearish'
-        elif trend is None:
-            return 'None'
-        else:
-            raise ValueError('Unknown type of trend.')
-
-    def get_position_string(self) -> str:
-        """
-        Returns position in string format, instead of integer enum.
-        :return: Position in string format.
-        """
-        if self.currentPosition == LONG:
-            return 'Long'
-        elif self.currentPosition == SHORT:
-            return 'Short'
-        elif self.currentPosition is None:
-            return 'None'
-        else:
-            raise ValueError("Invalid type of current position.")
-
-    def get_safe_rounded_percentage(self, decimalValue: float) -> str:
-        """
-        Converts decimal value provided to a percentage.
-        :param decimalValue: Percentage in decimal format.
-        :return: Rounded percentage value in a string format.
-        """
-        return self.get_safe_rounded_string(decimalValue, direction='right', multiplier=100, symbol='%')
-
-    def get_safe_rounded_string(self, value: float, roundDigits: int = None, symbol: str = '$', direction: str = 'left',
-                                multiplier: float = 1) -> str:
-        """
-        Helper function that will, if exists, return value rounded with symbol provided.
-        :param multiplier: Optional value to final value with before return.
-        :param direction: Direction to add the safe rounded string: left or right.
-        :param roundDigits: Number of digits to round value.
-        :param symbol: Symbol to insert to beginning of return string.
-        :param value: Value that will be safety checked.
-        :return: Rounded value (if not none) in string format.
-        """
-        if roundDigits is None:
-            roundDigits = self.precision
-
-        if value is None:
-            return "None"
-        else:
-            if direction == 'left':
-                return f'{symbol}{round(value * multiplier, roundDigits)}'
-            else:
-                return f'{round(value * multiplier, roundDigits)}{symbol}'
-
-    @staticmethod
-    def get_profit_or_loss_string(profit: float) -> str:
-        """
-        Helper function that returns where profit specified is profit or loss. Profit is positive; loss if negative.
-        :param profit: Amount to be checked for negativity or positivity.
-        :return: String value of whether profit ir positive or negative.
-        """
-        return "Profit" if profit >= 0 else "Loss"
-
-    def get_strategy_inputs(self, strategy_name):
-        """
-        Returns provided strategy's inputs if it exists.
-        """
-        if strategy_name not in self.strategies:
-            return 'None'
-        else:
-            return f"{', '.join(map(str, self.strategies[strategy_name].get_params()))}"
 
     def get_net(self) -> float:
         """
@@ -598,19 +480,6 @@ class SimulationTrader(Trader):
 
         return balance - self.startingBalance
 
-    @staticmethod
-    def get_profit_percentage(initialNet: float, finalNet: float) -> float:
-        """
-        Calculates net percentage from initial and final values and returns it.
-        :param initialNet: Initial net value.
-        :param finalNet: Final net value.
-        :return: Profit percentage.
-        """
-        if finalNet >= initialNet:
-            return finalNet / initialNet * 100 - 100
-        else:
-            return -1 * (100 - finalNet / initialNet * 100)
-
     def get_coin_name(self) -> str:
         """
         Returns target coin name.
@@ -619,15 +488,8 @@ class SimulationTrader(Trader):
         temp = self.dataView.symbol.upper().split('USDT')
         return temp[0]
 
-    def get_position(self) -> str:
-        """
-        Returns current position.
-        :return: Current position integer bot is in.
-        """
-        return self.currentPosition
-
     def get_average(self, movingAverage: str, parameter: str, value: int, dataObject: Data = None,
-                    update: bool = True, round_value=False) -> float:
+                    update: bool = True, round_value: bool = False) -> float:
         """
         Returns the moving average with parameter and value provided
         :param round_value: Boolean for whether returned value should be rounded or not.
@@ -649,41 +511,6 @@ class SimulationTrader(Trader):
             return dataObject.get_ema(value, parameter, update=update, round_value=round_value)
         else:
             raise ValueError(f'Unknown moving average {movingAverage}.')
-
-    def get_stop_loss(self) -> None or float:
-        """
-        Returns a stop loss for the position.
-        :return: Stop loss value.
-        """
-        if self.lossStrategy is None:
-            return None
-
-        if self.currentPrice is None:
-            self.currentPrice = self.dataView.get_current_price()
-
-        if self.currentPosition == SHORT:  # If we are in a short position.
-            if self.smartStopLossEnter and self.previousStopLoss > self.currentPrice:
-                self.stopLoss = self.previousStopLoss
-            else:
-                if self.lossStrategy == TRAILING:  # This means we use trailing loss.
-                    self.stopLoss = self.shortTrailingPrice * (1 + self.lossPercentageDecimal)
-                elif self.lossStrategy == STOP:  # This means we use the basic stop loss.
-                    self.stopLoss = self.sellShortPrice * (1 + self.lossPercentageDecimal)
-        elif self.currentPosition == LONG:  # If we are in a long position.
-            if self.smartStopLossEnter and self.previousStopLoss < self.currentPrice:
-                self.stopLoss = self.previousStopLoss
-            else:
-                if self.lossStrategy == TRAILING:  # This means we use trailing loss.
-                    self.stopLoss = self.longTrailingPrice * (1 - self.lossPercentageDecimal)
-                elif self.lossStrategy == STOP:  # This means we use the basic stop loss.
-                    self.stopLoss = self.buyLongPrice * (1 - self.lossPercentageDecimal)
-        else:  # This means we are not in any position currently.
-            self.stopLoss = None
-
-        if self.stopLoss is not None:  # This is for the smart stop loss to reenter position.
-            self.previousStopLoss = self.stopLoss
-
-        return self.stopLoss
 
     def output_trade_options(self):
         """
@@ -714,10 +541,7 @@ class SimulationTrader(Trader):
         """
         if self.currentPosition == SHORT and self.stopLoss is not None:
             self.output_message('\nCurrently in short position.')
-            if self.lossStrategy == TRAILING:
-                self.output_message(f'Short trailing loss: ${round(self.stopLoss, self.precision)}')
-            elif self.lossStrategy == STOP:
-                self.output_message(f'Stop loss: ${round(self.stopLoss, self.precision)}')
+            self.output_message(f'{self.get_stop_loss_strategy_string()}: ${round(self.stopLoss, self.precision)}')
 
     def output_long_information(self):
         """
@@ -725,10 +549,7 @@ class SimulationTrader(Trader):
         """
         if self.currentPosition == LONG and self.stopLoss is not None:
             self.output_message('\nCurrently in long position.')
-            if self.lossStrategy == TRAILING:
-                self.output_message(f'Long trailing loss: ${round(self.stopLoss, self.precision)}')
-            elif self.lossStrategy == STOP:
-                self.output_message(f'Stop loss: ${round(self.stopLoss, self.precision)}')
+            self.output_message(f'{self.get_stop_loss_strategy_string()}: ${round(self.stopLoss, self.precision)}')
 
     def output_control_mode(self):
         """
@@ -744,12 +565,7 @@ class SimulationTrader(Trader):
         Outputs general information about profit.
         """
         profit = round(self.get_profit(), self.precision)
-        if profit > 0:
-            self.output_message(f'Profit: ${profit}')
-        elif profit < 0:
-            self.output_message(f'Loss: ${-profit}')
-        else:
-            self.output_message('Profit: $0')
+        self.output_message(f'{self.get_profit_or_loss_string(profit)}: ${abs(profit)}')
 
     def output_basic_information(self):
         """
@@ -781,22 +597,22 @@ class SimulationTrader(Trader):
         self.output_message(f'Balance: ${round(self.balance, self.precision)}')
         self.output_profit_information()
         if type(self) == SimulationTrader:
-            self.output_message(f'\nTrades conducted this simulation: {len(self.trades)}')
+            self.output_message(f'\nTrades conducted this simulation: {len(self.trades)}\n')
         else:
-            self.output_message(f'\nTrades conducted in live market: {len(self.trades)}')
-        self.output_message('')
+            self.output_message(f'\nTrades conducted in live market: {len(self.trades)}\n')
 
-    def get_simulation_result(self):
+    def get_run_result(self, isSimulation: bool = False):
         """
         Gets end result of simulation.
+        :param isSimulation: Boolean that'll determine if coins are returned or not.
         """
-        self.output_message('\n---------------------------------------------------\nSimulation has ended')
+        self.output_message('\n---------------------------------------------------\nBot run has ended.')
         self.endingTime = datetime.utcnow()
-        if self.coin > 0:
+        if isSimulation and self.coin > 0:
             self.output_message(f"Selling all {self.coinName}...")
             self.sell_long('Sold all owned coin as simulation ended.')
 
-        if self.coinOwed > 0:
+        if isSimulation and self.coinOwed > 0:
             self.output_message(f"Returning all borrowed {self.coinName}...")
             self.buy_short('Returned all borrowed coin as simulation ended.')
 
@@ -819,38 +635,28 @@ class SimulationTrader(Trader):
             self.output_message(f'\nAction taken: {trade["action"]}')
 
         self.output_message('\nDaily Nets:')
-
         for index, net in enumerate(self.dailyChangeNets, start=1):
             self.output_message(f'Day {index}: {round(net, 2)}%')
 
         self.output_message("")
 
     def output_configuration(self):
-        self.output_message('\n---------------------------------------------------')
+        self.output_message('---------------------------------------------------')
         self.output_message('Bot Configuration:')
-        self.output_message(f'Starting time: {self.startingTime.strftime("%Y-%m-%d %H:%M:%S")}')
-        self.output_message(f'Starting balance: ${self.startingBalance}')
-        self.output_message(f'Symbol: {self.symbol}')
-        self.output_message(f'Interval: {convert_small_interval(self.dataView.interval)}')
-        self.output_message(f'Precision: {self.precision}')
-        self.output_message(f'Transaction fee percentage: {self.transactionFeePercentage}%')
-        self.output_message(f'Starting coin: {self.coin}')
-        self.output_message(f'Starting borrowed coin: {self.coinOwed}')
-        self.output_message(f'Starting net: ${self.get_net()}')
-        self.output_message(f'Stop loss type: {self.get_stop_loss_strategy_string()}')
-        self.output_message(f'Loss percentage: {self.lossPercentageDecimal * 100}%')
-        self.output_message(f'Smart stop loss counter: {self.smartStopLossInitialCounter}')
-        self.output_message(f'Safety timer: {self.safetyTimer}')
-
-        for strategy in self.strategies:
-            if strategy != 'movingAverage':
-                self.output_message(f'{strategy.capitalize()} Inputs: {self.get_strategy_inputs(strategy)}')
-
-        if 'movingAverage' in self.strategies:
-            self.output_message("\nMoving Average Info:")
-            for option in self.strategies['movingAverage'].get_params():
-                self.output_message("\t" + ', '.join(option.get_pretty_option()))
-
+        self.output_message(f'\tStarting time: {self.startingTime.strftime("%Y-%m-%d %H:%M:%S")}')
+        self.output_message(f'\tStarting balance: ${self.startingBalance}')
+        self.output_message(f'\tSymbol: {self.symbol}')
+        self.output_message(f'\tInterval: {convert_small_interval(self.dataView.interval)}')
+        self.output_message(f'\tPrecision: {self.precision}')
+        self.output_message(f'\tTransaction fee percentage: {self.transactionFeePercentageDecimal}%')
+        self.output_message(f'\tStarting coin: {self.coin}')
+        self.output_message(f'\tStarting borrowed coin: {self.coinOwed}')
+        self.output_message(f'\tStarting net: ${self.get_net()}')
+        self.output_message(f'\tStop loss type: {self.get_stop_loss_strategy_string()}')
+        self.output_message(f'\tLoss percentage: {self.lossPercentageDecimal * 100}%')
+        self.output_message(f'\tSmart stop loss counter: {self.smartStopLossInitialCounter}')
+        self.output_message(f'\tSafety timer: {self.safetyTimer}')
+        self.output_message(self.get_strategies_info_string())
         self.output_message('\nEnd of Configuration')
         self.output_message('---------------------------------------------------')
 

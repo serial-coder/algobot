@@ -3,18 +3,17 @@ import sys
 import time
 from datetime import datetime, timedelta
 from itertools import product
-from typing import Dict, Union
+from typing import Any, Dict, Union
 
 from dateutil import parser
 
 from algobot.algorithms import get_ema, get_sma, get_wma
-from algobot.enums import BEARISH, BULLISH, LONG, SHORT, STOP, TRAILING
-from algobot.helpers import (convert_all_dates_to_datetime,
+from algobot.enums import BEARISH, BULLISH, LONG, SHORT
+from algobot.helpers import (ROOT_DIR, convert_all_dates_to_datetime,
                              convert_small_interval, get_interval_minutes,
-                             get_label_string, get_ups_and_downs,
-                             set_up_strategies)
+                             get_ups_and_downs)
 from algobot.traders.trader import Trader
-from algobot.typeHints import DATA_TYPE, DICT_TYPE
+from algobot.typing_hints import DATA_TYPE, DICT_TYPE
 
 
 class Backtester(Trader):
@@ -30,7 +29,6 @@ class Backtester(Trader):
                  precision: int = 4,
                  outputTrades: bool = True):
         super().__init__(symbol=symbol, precision=precision, startingBalance=startingBalance)
-        self.commissionsPaid = 0
         self.marginEnabled = marginEnabled
         self.outputTrades: bool = outputTrades  # Boolean that'll determine whether trades are outputted to file or not.
 
@@ -39,9 +37,6 @@ class Backtester(Trader):
         self.check_data()
         self.interval = self.get_interval()
         self.intervalMinutes = get_interval_minutes(self.interval)
-        self.profit = 0
-
-        self.currentPeriod = None
         self.pastActivity = []  # We'll add previous data here when hovering through graph in GUI.
 
         if len(strategyInterval.split()) == 1:
@@ -56,8 +51,7 @@ class Backtester(Trader):
 
         self.ema_dict = {}
         self.rsi_dictionary = {}
-        set_up_strategies(self, strategies)
-
+        self.setup_strategies(strategies)
         self.startDateIndex = self.get_start_index(startDate)
         self.endDateIndex = self.get_end_index(endDate)
 
@@ -143,85 +137,6 @@ class Backtester(Trader):
                 return endDateIndex
         else:
             return len(self.data) - 1
-
-    def buy_long(self, message: str):
-        """
-        Executes long position.
-        :param message: Message that specifies why it entered long.
-        """
-        usd = self.balance
-        transactionFee = self.transactionFeePercentage * usd
-        self.commissionsPaid += transactionFee
-        self.currentPosition = LONG
-        self.coin += (usd - transactionFee) / self.currentPrice
-        self.balance -= usd
-        self.buyLongPrice = self.longTrailingPrice = self.currentPrice
-        self.add_trade(message)
-
-    def sell_long(self, message: str, stopLossExit: bool = False):
-        """
-        Exits long position.
-        :param stopLossExit: Boolean that'll determine whether a position was exited from a stop loss.
-        :param message: Message that specifies why it exited long.
-        """
-        coin = self.coin
-        transactionFee = self.currentPrice * coin * self.transactionFeePercentage
-        self.commissionsPaid += transactionFee
-        self.currentPosition = None
-        self.previousPosition = LONG
-        self.coin -= coin
-        self.balance += coin * self.currentPrice - transactionFee
-        self.buyLongPrice = self.longTrailingPrice = None
-        self.add_trade(message, stopLossExit=stopLossExit)
-
-    def sell_short(self, message: str):
-        """
-        Executes short position.
-        :param message: Message that specifies why it entered short.
-        """
-        transactionFee = self.balance * self.transactionFeePercentage
-        coin = (self.balance - transactionFee) / self.currentPrice
-        self.commissionsPaid += transactionFee
-        self.currentPosition = SHORT
-        self.coinOwed += coin
-        self.balance += self.currentPrice * coin - transactionFee
-        self.sellShortPrice = self.shortTrailingPrice = self.currentPrice
-        self.add_trade(message)
-
-    def buy_short(self, message: str, stopLossExit: bool = False):
-        """
-        Exits short position.
-        :param stopLossExit: Boolean that'll determine whether a position was exited from a stop loss.
-        :param message: Message that specifies why it exited short.
-        """
-        transactionFee = self.coinOwed * self.currentPrice * self.transactionFeePercentage
-        coin = self.coinOwed
-        self.commissionsPaid += transactionFee
-        self.currentPosition = None
-        self.previousPosition = SHORT
-        self.coinOwed -= coin
-        self.balance -= self.currentPrice * coin + transactionFee
-        self.sellShortPrice = self.shortTrailingPrice = None
-        self.add_trade(message, stopLossExit=stopLossExit)
-
-    def add_trade(self, message: str, stopLossExit: bool = False):
-        """
-        Adds a trade to list of trades
-        :param stopLossExit: Boolean that'll determine where this trade occurred from a stop loss.
-        :param message: Message used for conducting trade.
-        """
-        self.stopLossExit = stopLossExit
-        self.trades.append({
-            'date': self.currentPeriod['date_utc'],
-            'action': message,
-            'net': round(self.get_net(), self.precision)
-        })
-
-    def reset_trades(self):
-        """
-        Clears trades list.
-        """
-        self.trades = []
 
     def set_indexed_current_price_and_period(self, index: int):
         """
@@ -348,101 +263,75 @@ class Backtester(Trader):
         self.exit_backtest(index)
 
     @staticmethod
-    def get_all_permutations(combos: dict):
+    def get_all_permutations(combos: Dict[str, Any]):
         """
         Returns a list of setting permutations from combos provided.
         :param combos: Combos with ranges for the permutations.
         :return: List of all permutations.
         """
         for key, value_range in combos.items():
-            if type(value_range) == tuple:
-                continue
-            elif type(value_range) == list:
+            if type(value_range) == list:
                 temp = [x for x in range(value_range[0], value_range[1] + 1, value_range[2])]
                 combos[key] = temp
+            elif type(value_range) == tuple:
+                continue
             else:
-                raise ValueError("Invalid type of value provided to combos. Make sure to provide a tuple or list.")
+                raise ValueError("Invalid type of value provided to combos. Make sure to use a list or a tuple.")
 
-        return [dict(zip(combos, v)) for v in product(*combos.values())]
+        permutations = []
+        for v in product(*combos.values()):
+            strategy_dict = dict(zip(combos, v))
+            return_dict = {'strategies': {}}
+
+            for key, value in strategy_dict.items():
+                stripped = key.rstrip('0123456789')
+                if key != stripped:
+                    if stripped not in return_dict['strategies']:
+                        return_dict['strategies'][stripped] = []
+                    return_dict['strategies'][stripped].append(value)
+                else:
+                    return_dict[key] = value
+
+            permutations.append(return_dict)
+        return permutations
 
     def optimizer(self, combos: Dict, thread=None):
         """
         This function will run a brute-force optimization test to figure out the best inputs.
+        Sample combos should look something like: {
+            'lossType': (TRAILING,), -> use a tuple for predefined values.
+            'lossPercentage': [5, 15, 3] -> use a list with 3 values for steps i.e. -> 5, 8, 11, 14.
+            (make sure to use ints for above ^)
+            'stopLossCounter': 5 -> use a str, float, or int for a static value
+        }
         """
         settings_list = self.get_all_permutations(combos)
 
         for settings in settings_list:
-            self.apply_settings(settings)
+            self.apply_general_settings(settings)
             self.start_backtest(thread)
+            self.restore()
 
-    def apply_settings(self, settings: dict):
+    def apply_general_settings(self, settings: dict):
         self.takeProfitType = settings['takeProfitType']
         self.takeProfitPercentageDecimal = settings['takeProfitPercentage'] / 100
         self.lossStrategy = settings['lossType']
         self.lossPercentageDecimal = settings['lossPercentage'] / 100
 
+        for strategy_name, strategy_values in settings['strategies'].items():
+            self.strategies[strategy_name].set_inputs(strategy_values)
+
     def restore(self):
-        pass
-
-    def handle_trailing_prices(self):
-        """
-        Handles trailing prices based on the current price.
-        """
-        if self.longTrailingPrice is not None and self.currentPrice > self.longTrailingPrice:
-            self.longTrailingPrice = self.currentPrice
-        if self.shortTrailingPrice is not None and self.currentPrice < self.shortTrailingPrice:
-            self.shortTrailingPrice = self.currentPrice
-
-    def _get_short_stop_loss(self) -> Union[float, None]:
-        """
-        Returns stop loss for short position.
-        :return: Stop loss for short position.
-        """
-        if self.lossStrategy == TRAILING:
-            return self.shortTrailingPrice * (1 + self.lossPercentageDecimal)
-        elif self.lossStrategy == STOP:
-            return self.sellShortPrice * (1 + self.lossPercentageDecimal)
-        elif self.lossStrategy is None:
-            return None
-        else:
-            raise ValueError("Invalid type of loss strategy provided.")
-
-    def _get_long_stop_loss(self) -> Union[float, None]:
-        """
-        Returns stop loss for long position.
-        :return: Stop loss for long position.
-        """
-        if self.lossStrategy == TRAILING:
-            return self.longTrailingPrice * (1 - self.lossPercentageDecimal)
-        elif self.lossStrategy == STOP:
-            return self.buyLongPrice * (1 - self.lossPercentageDecimal)
-        elif self.lossStrategy is None:
-            return None
-        else:
-            raise ValueError("Invalid type of loss strategy provided.")
-
-    def get_stop_loss(self) -> Union[float, None]:
-        """
-        Returns stop loss value.
-        :return: Stop loss value.
-        """
-        self.handle_trailing_prices()
-        if self.currentPosition == SHORT:
-            self.previousStopLoss = self._get_short_stop_loss()
-            return self.previousStopLoss
-        elif self.currentPosition == LONG:
-            self.previousStopLoss = self._get_long_stop_loss()
-            return self.previousStopLoss
-        else:
-            return None
-
-    def get_net(self) -> float:
-        """
-        Returns net balance with current price of coin being traded. It factors in the current balance, the amount
-        shorted, and the amount owned.
-        :return: Net balance.
-        """
-        return self.coin * self.currentPrice - self.coinOwed * self.currentPrice + self.balance
+        self.reset_trades()
+        self.reset_smart_stop_loss()
+        self.balance = self.startingBalance
+        self.coin = self.coinOwed = 0
+        self.currentPosition = self.currentPeriod = None
+        self.previousStopLoss = None
+        self.stopLossExit = False
+        self.smartStopLossEnter = False
+        self.ema_dict = {}
+        self.rsi_dictionary = {}
 
     def get_interval(self) -> str:
         """
@@ -475,14 +364,6 @@ class Backtester(Trader):
             if days > 1:
                 result += 's'
         return result
-
-    def get_trend(self) -> Union[int, None]:
-        """
-        Returns trend based on the strategies provided.
-        :return: Integer in the form of an enum.
-        """
-        trends = [strategy.trend for strategy in self.strategies.values()]
-        return self.get_cumulative_trend(trends)
 
     def get_moving_average(self, data: list, average: str, prices: int, parameter: str, round_value=False) -> float:
         """
@@ -618,11 +499,11 @@ class Backtester(Trader):
             else:
                 if self.previousPosition == LONG and self.stopLossExit:
                     if self.currentPrice > self.previousStopLoss and self.smartStopLossCounter > 0:
-                        self.buy_long("Reentered long because of smart stop loss.")
+                        self.buy_long("Reentered long because of smart stop loss.", smartEnter=True)
                         self.smartStopLossCounter -= 1
                 elif self.previousPosition == SHORT and self.stopLossExit:
                     if self.currentPrice < self.previousStopLoss and self.smartStopLossCounter > 0:
-                        self.sell_short("Reentered short because of smart stop loss.")
+                        self.sell_short("Reentered short because of smart stop loss.", smartEnter=True)
                         self.smartStopLossCounter -= 1
 
     def print_options(self):
@@ -636,13 +517,6 @@ class Backtester(Trader):
         for index, option in enumerate(self.strategies['movingAverage'].get_params()):
             print(f'\t\tOption {index + 1}) {option.movingAverage.upper()}{option.initialBound, option.finalBound}'
                   f' - {option.parameter}')
-
-    def print_strategies(self):
-        """
-        Prints out strategies provided in configuration.
-        """
-        for strategyName, strategy in self.strategies.items():
-            print(f'\t{get_label_string(strategyName)}: {strategy.get_params()}')
 
     def print_configuration_parameters(self, stdout=None):
         """
@@ -659,11 +533,8 @@ class Backtester(Trader):
         print(f"\tStarting Balance: ${self.startingBalance}")
         print(f'\tTake Profit Percentage: {round(self.takeProfitPercentageDecimal * 100, 2)}%')
         print(f'\tStop Loss Percentage: {round(self.lossPercentageDecimal * 100, 2)}%')
-        if self.lossStrategy == TRAILING:
-            print("\tLoss Strategy: Trailing")
-        else:
-            print("\tLoss Strategy: Stop")
-        self.print_strategies()
+        print(f'\tLoss Strategy: {self.get_stop_loss_strategy_string()}')
+        print(self.get_strategies_info_string())
 
         sys.stdout = previous_stdout  # revert stdout back to normal
 
@@ -731,7 +602,7 @@ class Backtester(Trader):
         symbol = 'Imported' if not self.symbol else self.symbol
         dateString = datetime.now().strftime("%Y-%m-%d_%H-%M")
         resultFile = f'{symbol}_backtest_results_{"_".join(self.interval.lower().split())}-{dateString}.txt'
-        os.chdir('../')
+        os.chdir(ROOT_DIR)
 
         if not os.path.exists(backtestResultsFolder):
             os.mkdir(backtestResultsFolder)
@@ -746,7 +617,7 @@ class Backtester(Trader):
 
         return resultFile
 
-    def write_results(self, resultFile=None) -> str:
+    def write_results(self, resultFile: str = None) -> str:
         """
         Writes backtest results to resultFile provided. If none is provided, it'll write to a default file name.
         :param resultFile: File to write results in.
@@ -768,3 +639,14 @@ class Backtester(Trader):
 
         os.chdir(currentPath)
         return filePath
+
+
+if __name__ == '__main__':
+    da = [{'date_utc': '09-09-2020'}, {'date_utc': '09-10-2020'}]
+    b = Backtester(1000, data=da, strategyInterval='1d', strategies=[])
+    c = {'lossPercentage': (5, ), 'lossType': ("STOP", "TRAILING"),
+         'shrek1': [1, 15, 3], 'shrek2': [10, 15, 1], 'shrek3': [15, 20, 1],
+         'stoic1': [5, 10, 1], 'stoic2': [10, 15, 2], 'stoic3': [0, 5, 1]}
+    y = b.get_all_permutations(c)
+    for _ in y:
+        print(_)

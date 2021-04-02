@@ -10,24 +10,28 @@ from PyQt5.QtCore import QRunnable, QThreadPool
 from PyQt5.QtGui import QIcon, QTextCursor
 from PyQt5.QtWidgets import (QApplication, QFileDialog, QMainWindow,
                              QMessageBox, QTableWidgetItem)
-from pyqtgraph import InfiniteLine, PlotWidget, mkPen
 
 import algobot.assets
 from algobot.algodict import get_interface_dictionary
 from algobot.data import Data
 from algobot.enums import (AVG_GRAPH, BACKTEST, LIVE, LONG, NET_GRAPH, SHORT,
                            SIMULATION)
-from algobot.helpers import (ROOT_DIR, create_folder_if_needed, get_logger,
-                             open_file_or_folder)
+from algobot.graph_helpers import (add_data_to_plot, destroy_graph_plots,
+                                   get_graph_dictionary,
+                                   set_backtest_graph_limits_and_empty_plots,
+                                   setup_graph_plots, setup_graphs,
+                                   update_backtest_graph_limits,
+                                   update_main_graphs)
+from algobot.helpers import (ROOT_DIR, add_to_table, create_folder,
+                             create_folder_if_needed, get_caller_string,
+                             get_logger, open_file_or_folder)
 from algobot.interface.about import About
 from algobot.interface.configuration import Configuration
-from algobot.interface.otherCommands import OtherCommands
-from algobot.interface.palettes import (bloomberg_palette, dark_palette,
-                                        green_palette, light_palette,
-                                        red_palette)
+from algobot.interface.other_commands import OtherCommands
 from algobot.interface.statistics import Statistics
+from algobot.news_scraper import scrape_news
 from algobot.option import Option
-from algobot.scrapeNews import scrape_news
+from algobot.slots import initiate_slots
 from algobot.threads import backtestThread, botThread, listThread, workerThread
 from algobot.traders.backtester import Backtester
 from algobot.traders.realtrader import RealTrader
@@ -61,9 +65,8 @@ class Interface(QMainWindow):
             {'graph': self.avgGraph, 'plots': [], 'label': self.liveAvgCoordinates, 'enable': True},
             {'graph': self.simulationAvgGraph, 'plots': [], 'label': self.simulationAvgCoordinates, 'enable': True},
         )
-        self.graphLeeway = 10  # Amount of points to set extra for graph limits.
-        self.setup_graphs()  # Setting up graphs.
-        self.initiate_slots()  # Initiating slots.
+        setup_graphs(gui=self)  # Setting up graphs.
+        initiate_slots(app=app, gui=self)  # Initiating slots.
 
         self.interfaceDictionary = get_interface_dictionary(self)
         self.advancedLogging = False
@@ -141,7 +144,7 @@ class Interface(QMainWindow):
             self.create_popup(e)
 
     @staticmethod
-    def get_tickers() -> list:
+    def get_tickers() -> List[str]:
         """
         Returns all available tickers from Binance API.
         :return: List of all available tickers.
@@ -150,9 +153,6 @@ class Interface(QMainWindow):
                    if 'USDT' in ticker['symbol']]
 
         tickers.sort()
-        # tickers.remove("BTCUSDT")
-        # tickers.insert(0, 'BTCUSDT')
-
         return tickers
 
     def setup_tickers(self, tickers):
@@ -203,7 +203,7 @@ class Interface(QMainWindow):
         worker.signals.finished.connect(self.end_backtest)
         worker.signals.message.connect(lambda message: self.add_to_monitor(BACKTEST, message))
         worker.signals.restore.connect(lambda: self.disable_interface(disable=False, caller=BACKTEST))
-        worker.signals.updateGraphLimits.connect(self.update_backtest_graph_limits)
+        worker.signals.updateGraphLimits.connect(lambda: update_backtest_graph_limits(self))
         self.threadPool.start(worker)
 
     def end_backtest_thread(self):
@@ -219,7 +219,7 @@ class Interface(QMainWindow):
         """
         Ends backtest and prompts user if they want to see the results.
         """
-        backtestFolderPath = self.create_folder('Backtest Results')
+        backtestFolderPath = create_folder('Backtest Results')
         innerPath = os.path.join(backtestFolderPath, self.backtester.symbol)
         create_folder_if_needed(innerPath, backtestFolderPath)
         defaultFile = os.path.join(innerPath, self.backtester.get_default_result_file_name())
@@ -266,7 +266,7 @@ class Interface(QMainWindow):
         self.backtestProfitPercentage.setText(updatedDict['profitPercentage'])
         self.backtestTradesMade.setText(updatedDict['tradesMade'])
         self.backtestCurrentPeriod.setText(updatedDict['currentPeriod'])
-        self.add_data_to_plot(self.interfaceDictionary[BACKTEST]['mainInterface']['graph'], 0, y=net, timestamp=utc)
+        add_data_to_plot(self, self.interfaceDictionary[BACKTEST]['mainInterface']['graph'], 0, y=net, timestamp=utc)
 
     def update_backtest_configuration_gui(self, statDict: dict):
         """
@@ -288,6 +288,28 @@ class Interface(QMainWindow):
                 self.backtestMovingAverage3.setText(statDict['options'][1][0])
                 self.backtestMovingAverage4.setText(statDict['options'][1][1])
 
+    def update_backtest_activity_based_on_graph(self, position: int):
+        """
+        Updates backtest activity based on where the line is in the backtest graph.
+        :param position: Position to show activity at.
+        """
+        if self.backtester is not None:
+            if 1 <= position <= len(self.backtester.pastActivity):
+                try:
+                    self.update_backtest_gui(self.backtester.pastActivity[position - 1])
+                except IndexError as e:
+                    self.logger.exception(str(e))
+
+    def reset_backtest_cursor(self):
+        """
+        Resets backtest hover cursor to end of graph.
+        """
+        graphDict = get_graph_dictionary(self, self.backtestGraph)
+        if self.backtester is not None and graphDict.get('line') is not None:
+            index = len(self.backtester.pastActivity)
+            graphDict['line'].setPos(index)
+            self.update_backtest_activity_based_on_graph(index)
+
     def setup_backtester(self, configurationDictionary: dict):
         """
         Set up backtest GUI with dictionary provided.
@@ -296,28 +318,11 @@ class Interface(QMainWindow):
         interfaceDict = self.interfaceDictionary[BACKTEST]['mainInterface']
         symbol = configurationDictionary['symbol']
         interval = configurationDictionary['interval']
-        self.destroy_graph_plots(interfaceDict['graph'])
-        self.setup_graph_plots(interfaceDict['graph'], self.backtester, NET_GRAPH)
-        self.set_backtest_graph_limits_and_empty_plots()
+        destroy_graph_plots(self, interfaceDict['graph'])
+        setup_graph_plots(self, interfaceDict['graph'], self.backtester, NET_GRAPH)
+        set_backtest_graph_limits_and_empty_plots(self)
         self.update_backtest_configuration_gui(configurationDictionary)
         self.add_to_backtest_monitor(f"Started backtest with {symbol} data and {interval.lower()} interval periods.")
-
-    def update_backtest_graph_limits(self, limit: int = 105):
-        graphDict = self.get_graph_dictionary(self.backtestGraph)
-        graphDict['graph'].setLimits(xMin=0, xMax=limit + 1)
-
-    def set_backtest_graph_limits_and_empty_plots(self, limit: int = 105):
-        """
-        Resets backtest graph and sets x-axis limits.
-        """
-        initialTimeStamp = self.backtester.data[0]['date_utc'].timestamp()
-        graphDict = self.get_graph_dictionary(self.backtestGraph)
-        graphDict['graph'].setLimits(xMin=0, xMax=limit)
-        plot = graphDict['plots'][0]
-        plot['x'] = [0]
-        plot['y'] = [self.backtester.startingBalance]
-        plot['z'] = [initialTimeStamp]
-        plot['plot'].setData(plot['x'], plot['y'])
 
     def check_strategies(self, caller: int) -> float:
         if not self.configuration.get_strategies(caller):
@@ -509,15 +514,15 @@ class Interface(QMainWindow):
         interfaceDict = self.interfaceDictionary[caller]['mainInterface']
         self.disable_interface(True, caller, False)
         self.enable_override(caller)
-        self.destroy_graph_plots(interfaceDict['graph'])
-        self.destroy_graph_plots(interfaceDict['averageGraph'])
-        self.statistics.initialize_tab(trader.get_grouped_statistics(), tabType=self.get_caller_string(caller))
-        self.setup_graph_plots(interfaceDict['graph'], trader, NET_GRAPH)
+        destroy_graph_plots(self, interfaceDict['graph'])
+        destroy_graph_plots(self, interfaceDict['averageGraph'])
+        self.statistics.initialize_tab(trader.get_grouped_statistics(), tabType=get_caller_string(caller))
+        setup_graph_plots(self, interfaceDict['graph'], trader, NET_GRAPH)
 
-        averageGraphDict = self.get_graph_dictionary(interfaceDict['averageGraph'])
+        averageGraphDict = get_graph_dictionary(self, interfaceDict['averageGraph'])
         if self.configuration.graphIndicatorsCheckBox.isChecked():
             averageGraphDict['enable'] = True
-            self.setup_graph_plots(interfaceDict['averageGraph'], trader, AVG_GRAPH)
+            setup_graph_plots(self, interfaceDict['averageGraph'], trader, AVG_GRAPH)
         else:
             averageGraphDict['enable'] = False
 
@@ -548,7 +553,7 @@ class Interface(QMainWindow):
         :param valueDict: Dictionary containing statistics.
         :param caller: Object that determines which object gets updated.
         """
-        self.statistics.modify_tab(groupedDict, tabType=self.get_caller_string(caller))
+        self.statistics.modify_tab(groupedDict, tabType=get_caller_string(caller))
         self.update_main_interface_and_graphs(caller=caller, valueDict=valueDict)
         self.handle_position_buttons(caller=caller)
         self.handle_custom_stop_loss_buttons(caller=caller)
@@ -578,37 +583,8 @@ class Interface(QMainWindow):
         self.update_interface_text(caller=caller, valueDict=valueDict)
         index = 0 if caller == LIVE else 1
         if self.graphUpdateSchedule[index] is None or time.time() > self.graphUpdateSchedule[index]:
-            self.update_main_graphs(caller=caller, valueDict=valueDict)
+            update_main_graphs(gui=self, caller=caller, valueDict=valueDict)
             self.graphUpdateSchedule[index] = time.time() + self.graphUpdateSeconds
-
-    def update_main_graphs(self, caller, valueDict):
-        """
-        Updates graphs and moving averages from statistics based on caller.
-        :param valueDict: Dictionary with required values.
-        :param caller: Caller that decides which graphs get updated.
-        """
-        precision = self.get_trader(caller=caller).precision
-        interfaceDict = self.interfaceDictionary[caller]
-        currentUTC = datetime.utcnow().timestamp()
-        net = valueDict['net']
-
-        netGraph = interfaceDict['mainInterface']['graph']
-        averageGraph = interfaceDict['mainInterface']['averageGraph']
-
-        graphDict = self.get_graph_dictionary(netGraph)
-        graphXSize = len(graphDict['plots'][0]['x']) + self.graphLeeway
-        netGraph.setLimits(xMin=0, xMax=graphXSize)
-        self.add_data_to_plot(netGraph, 0, y=round(net, 2), timestamp=currentUTC)
-
-        averageGraphDict = self.get_graph_dictionary(averageGraph)
-        if averageGraphDict['enable']:
-            averageGraph.setLimits(xMin=0, xMax=graphXSize)
-            for index, optionDetail in enumerate(valueDict['optionDetails']):
-                initialAverage, finalAverage = optionDetail[:2]
-                self.add_data_to_plot(averageGraph, index * 2, round(initialAverage, precision), currentUTC)
-                self.add_data_to_plot(averageGraph, index * 2 + 1, round(finalAverage, precision), currentUTC)
-
-            self.add_data_to_plot(averageGraph, -1, y=round(valueDict['price'], precision), timestamp=currentUTC)
 
     def destroy_trader(self, caller):
         """
@@ -866,202 +842,6 @@ class Interface(QMainWindow):
         initialName, finalName = option.get_pretty_option()
         return initialAverage, finalAverage, initialName, finalName
 
-    def setup_graphs(self):
-        """
-        Sets up all available graphs in application.
-        """
-        for graphDict in self.graphs:
-            graph = graphDict['graph']
-            graph.setLimits(xMin=0, xMax=self.graphLeeway, yMin=-1, yMax=1000_000_000_000_000)
-            graph.setBackground('w')
-            graph.setLabel('left', 'USDT')
-            graph.setLabel('bottom', 'Data Points')
-            graph.addLegend()
-
-            if graph == self.backtestGraph:
-                graph.setTitle("Backtest Price Change")
-            elif graph == self.simulationGraph:
-                graph.setTitle("Simulation Price Change")
-            elif graph == self.liveGraph:
-                graph.setTitle("Live Price Change")
-            elif graph == self.simulationAvgGraph:
-                graph.setTitle("Simulation Moving Averages")
-            elif graph == self.avgGraph:
-                graph.setTitle("Live Moving Averages")
-
-    def add_data_to_plot(self, targetGraph: PlotWidget, plotIndex: int, y: float, timestamp: float):
-        """
-        Adds data to plot in provided graph.
-        :param targetGraph: Graph to use for plot to add data to.
-        :param plotIndex: Index of plot in target graph's list of plots.
-        :param y: Y value to add.
-        :param timestamp: Timestamp value to add.
-        """
-        graphDict = self.get_graph_dictionary(targetGraph=targetGraph)
-        plot = graphDict['plots'][plotIndex]
-
-        secondsInDay = 86400  # Reset graph every 24 hours (assuming data is updated only once a second).
-        if len(plot['x']) >= secondsInDay:
-            plot['x'] = [0]
-            plot['y'] = [y]
-            plot['z'] = [timestamp]
-        else:
-            plot['x'].append(plot['x'][-1] + 1)
-            plot['y'].append(y)
-            plot['z'].append(timestamp)
-        plot['plot'].setData(plot['x'], plot['y'])
-
-    def append_plot_to_graph(self, targetGraph: PlotWidget, toAdd: list):
-        """
-        Appends plot to graph provided.
-        :param targetGraph: Graph to add plot to.
-        :param toAdd: List of plots to add to target graph.
-        """
-        graphDict = self.get_graph_dictionary(targetGraph=targetGraph)
-        graphDict['plots'] += toAdd
-
-    def destroy_graph_plots(self, targetGraph: PlotWidget):
-        """
-        Resets graph plots for graph provided.
-        :param targetGraph: Graph to destroy plots for.
-        """
-        graphDict = self.get_graph_dictionary(targetGraph=targetGraph)
-        graphDict['graph'].clear()
-        graphDict['plots'] = []
-
-    def setup_net_graph_plot(self, graph: PlotWidget, trader: SimulationTrader, color: str):
-        """
-        Sets up net balance plot for graph provided.
-        :param trader: Type of trader that will use this graph.
-        :param graph: Graph where plot will be setup.
-        :param color: Color plot will be setup in.
-        """
-        net = trader.startingBalance
-        currentDateTimestamp = datetime.utcnow().timestamp()
-        plot = self.get_plot_dictionary(graph=graph, color=color, y=net, name='Net', timestamp=currentDateTimestamp)
-
-        self.append_plot_to_graph(graph, [plot])
-
-    def setup_average_graph_plots(self, graph: PlotWidget, trader, colors: list):
-        """
-        Sets up moving average plots for graph provided.
-        :param trader: Type of trader that will use this graph.
-        :param graph: Graph where plots will be setup.
-        :param colors: List of colors plots will be setup in.
-        """
-        if trader.currentPrice is None:
-            trader.currentPrice = trader.dataView.get_current_price()
-
-        currentPrice = trader.currentPrice
-        currentDateTimestamp = datetime.utcnow().timestamp()
-        colorCounter = 1
-
-        if 'movingAverage' in trader.strategies:
-            for option in trader.strategies['movingAverage'].get_params():
-                initialAverage, finalAverage, initialName, finalName = self.get_option_info(option, trader)
-                initialPlotDict = self.get_plot_dictionary(graph=graph, color=colors[colorCounter % len(colors)],
-                                                           y=initialAverage,
-                                                           name=initialName, timestamp=currentDateTimestamp)
-                secondaryPlotDict = self.get_plot_dictionary(graph=graph,
-                                                             color=colors[(colorCounter + 1) % len(colors)],
-                                                             y=finalAverage,
-                                                             name=finalName, timestamp=currentDateTimestamp)
-                colorCounter += 2
-                self.append_plot_to_graph(graph, [initialPlotDict, secondaryPlotDict])
-
-        tickerPlotDict = self.get_plot_dictionary(graph=graph, color=colors[0], y=currentPrice, name=trader.symbol,
-                                                  timestamp=currentDateTimestamp)
-        self.append_plot_to_graph(graph, [tickerPlotDict])
-
-    def get_plot_dictionary(self, graph, color, y, name, timestamp) -> dict:
-        """
-        Creates a graph plot and returns a dictionary of it.
-        :param graph: Graph to add plot to.
-        :param color: Color of plot.
-        :param y: Y value to start with for plot.
-        :param name: Name of plot.
-        :param timestamp: First UTC timestamp of plot.
-        :return: Dictionary of plot information.
-        """
-        plot = self.create_graph_plot(graph, (0,), (y,), color=color, plotName=name)
-        return {
-            'plot': plot,
-            'x': [0],
-            'y': [y],
-            'z': [timestamp],
-            'name': name,
-        }
-
-    def create_infinite_line(self, graphDict: dict, colors: list = None):
-        """
-        Creates an infinite (hover) line and adds it as a reference to the graph dictionary provided.
-        :param colors: Optional colors list.
-        :param graphDict: A reference to this infinite line will be added to this graph dictionary.
-        """
-        colors = self.get_graph_colors() if colors is None else colors
-        hoverLine = InfiniteLine(pos=0, pen=mkPen(colors[-1], width=1), movable=False)
-        graphDict['graph'].addItem(hoverLine)
-        graphDict['line'] = hoverLine
-
-    def setup_graph_plots(self, graph: PlotWidget, trader: Union[SimulationTrader, Backtester], graphType: int):
-        """
-        Setups graph plots for graph, trade, and graphType specified.
-        :param graph: Graph that will be setup.
-        :param trader: Trade object that will use this graph.
-        :param graphType: Graph type; i.e. moving average or net balance.
-        """
-        colors = self.get_graph_colors()
-        if self.configuration.enableHoverLine.isChecked():
-            self.create_infinite_line(self.get_graph_dictionary(graph), colors=colors)
-
-        if graphType == NET_GRAPH:
-            self.setup_net_graph_plot(graph=graph, trader=trader, color=colors[0])
-        elif graphType == AVG_GRAPH:
-            self.setup_average_graph_plots(graph=graph, trader=trader, colors=colors)
-        else:
-            raise TypeError("Invalid type of graph provided.")
-
-    def get_graph_colors(self) -> list:
-        """
-        Returns graph colors to be placed based on configuration.
-        """
-        config = self.configuration
-        colorDict = {'blue': 'b',
-                     'green': 'g',
-                     'red': 'r',
-                     'cyan': 'c',
-                     'magenta': 'm',
-                     'yellow': 'y',
-                     'black': 'k',
-                     'white': 'w'}
-        colors = [config.balanceColor.currentText(), config.avg1Color.currentText(), config.avg2Color.currentText(),
-                  config.avg3Color.currentText(), config.avg4Color.currentText(), config.hoverLineColor.currentText()]
-        return [colorDict[color.lower()] for color in colors]
-
-    def create_graph_plot(self, graph: PlotWidget, x: tuple, y: tuple, plotName: str, color: str):
-        """
-        Creates a graph plot with parameters provided.
-        :param graph: Graph function will plot on.
-        :param x: X values of graph.
-        :param y: Y values of graph.
-        :param plotName: Name of graph.
-        :param color: Color graph will be drawn in.
-        """
-        pen = mkPen(color=color)
-        plot = graph.plot(x, y, name=plotName, pen=pen, autoDownsample=True, downsampleMethod='subsample')
-        plot.curve.scene().sigMouseMoved.connect(lambda point: self.onMouseMoved(point=point, graph=graph))
-        return plot
-
-    def get_graph_dictionary(self, targetGraph) -> dict:
-        """
-        Loops over list of graphs and returns appropriate graph dictionary.
-        :param targetGraph: Graph to find in list of graphs.
-        :return: Dictionary with the graph values.
-        """
-        for graph in self.graphs:
-            if graph["graph"] == targetGraph:
-                return graph
-
     def onMouseMoved(self, point, graph):
         """
         Updates coordinates label when mouse is hovered over graph.
@@ -1069,7 +849,7 @@ class Interface(QMainWindow):
         :param graph: Graph being hovered on.
         """
         p = graph.plotItem.vb.mapSceneToView(point)
-        graphDict = self.get_graph_dictionary(graph)
+        graphDict = get_graph_dictionary(self, graph)
 
         if p and graphDict.get('line'):  # Ensure that the hover line is enabled.
             graphDict['line'].setPos(p.x())
@@ -1086,36 +866,6 @@ class Interface(QMainWindow):
 
                 if graph == self.backtestGraph and self.backtester is not None:
                     self.update_backtest_activity_based_on_graph(xValue)
-
-    def update_backtest_activity_based_on_graph(self, position: int):
-        """
-        Updates backtest activity based on where the line is in the backtest graph.
-        :param position: Position to show activity at.
-        """
-        if self.backtester is not None:
-            if 1 <= position <= len(self.backtester.pastActivity):
-                try:
-                    self.update_backtest_gui(self.backtester.pastActivity[position - 1])
-                except IndexError as e:
-                    self.logger.exception(str(e))
-
-    def reset_backtest_cursor(self):
-        """
-        Resets backtest hover cursor to end of graph.
-        """
-        graphDict = self.get_graph_dictionary(self.backtestGraph)
-        if self.backtester is not None and graphDict.get('line') is not None:
-            index = len(self.backtester.pastActivity)
-            graphDict['line'].setPos(index)
-            self.update_backtest_activity_based_on_graph(index)
-
-    @staticmethod
-    def clear_table(table):
-        """
-        Sets table row count to 0.
-        :param table: Table which is to be cleared.
-        """
-        table.setRowCount(0)
 
     @staticmethod
     def test_table(table, trade: list):
@@ -1162,7 +912,7 @@ class Interface(QMainWindow):
         Function that adds activity information to the backtest activity monitor.
         :param message: Message to add to backtest activity log.
         """
-        self.add_to_table(self.backtestTable, [message])
+        add_to_table(self.backtestTable, [message])
         self.backtestTable.scrollToBottom()
 
     def add_to_simulation_activity_monitor(self, message: str):
@@ -1170,7 +920,7 @@ class Interface(QMainWindow):
         Function that adds activity information to the simulation activity monitor.
         :param message: Message to add to simulation activity log.
         """
-        self.add_to_table(self.simulationActivityMonitor, [message])
+        add_to_table(self.simulationActivityMonitor, [message])
         self.simulationActivityMonitor.scrollToBottom()
 
     def add_to_live_activity_monitor(self, message: str):
@@ -1178,29 +928,8 @@ class Interface(QMainWindow):
         Function that adds activity information to activity monitor.
         :param message: Message to add to activity log.
         """
-        self.add_to_table(self.activityMonitor, [message])
+        add_to_table(self.activityMonitor, [message])
         self.activityMonitor.scrollToBottom()
-
-    @staticmethod
-    def add_to_table(table, data: list, insertDate=True):
-        """
-        Function that will add specified data to a provided table.
-        :param insertDate: Boolean to add date to 0th index of data or not.
-        :param table: Table we will add data to.
-        :param data: Data we will add to table.
-        """
-        rowPosition = table.rowCount()
-        columns = table.columnCount()
-
-        if insertDate:
-            data.insert(0, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
-        if len(data) != columns:
-            raise ValueError('Data needs to have the same amount of columns as table.')
-
-        table.insertRow(rowPosition)
-        for column in range(0, columns):
-            table.setItem(rowPosition, column, QTableWidgetItem(str(data[column])))
 
     def update_trades_table_and_activity_monitor(self, trade, caller):
         """
@@ -1223,7 +952,7 @@ class Interface(QMainWindow):
                      trade['method'],
                      trade['action']]
 
-        self.add_to_table(table, tradeData)
+        add_to_table(table, tradeData)
         self.add_to_monitor(caller, trade['action'])
 
         if caller == LIVE and self.telegramBot and self.configuration.enableTelegramSendMessage.isChecked():
@@ -1283,17 +1012,6 @@ class Interface(QMainWindow):
         self.configuration.configurationTabWidget.setCurrentIndex(2)
         self.configuration.simulationConfigurationTabWidget.setCurrentIndex(0)
 
-    @staticmethod
-    def get_caller_string(caller):
-        if caller == LIVE:
-            return 'live'
-        elif caller == SIMULATION:
-            return 'simulation'
-        elif caller == BACKTEST:
-            return 'backtest'
-        else:
-            raise ValueError("Invalid type of caller specified.")
-
     def show_statistics(self, index: int):
         """
         Opens statistics window and sets tab index to index provided.
@@ -1310,57 +1028,6 @@ class Interface(QMainWindow):
             self.threadPool.start(thread)
         else:
             self.create_popup('There is currently no live bot running.')
-
-    def create_configuration_slots(self):
-        """
-        Creates configuration slots.
-        """
-        self.configuration.lightModeRadioButton.toggled.connect(lambda: self.set_light_mode())
-        self.configuration.darkModeRadioButton.toggled.connect(lambda: self.set_dark_mode())
-        self.configuration.bloombergModeRadioButton.toggled.connect(lambda: self.set_bloomberg_mode())
-        self.configuration.bullModeRadioButton.toggled.connect(lambda: self.set_bull_mode())
-        self.configuration.bearModeRadioButton.toggled.connect(lambda: self.set_bear_mode())
-        self.configuration.simpleLoggingRadioButton.clicked.connect(lambda: self.set_advanced_logging(False))
-        self.configuration.advancedLoggingRadioButton.clicked.connect(lambda: self.set_advanced_logging(True))
-
-        self.configuration.updateBinanceValues.clicked.connect(self.update_binance_values)
-        self.configuration.updateTickers.clicked.connect(self.tickers_thread)
-
-    @staticmethod
-    def create_folder(folder):
-        targetPath = os.path.join(ROOT_DIR, folder)
-        create_folder_if_needed(targetPath)
-
-        return targetPath
-
-    def open_folder(self, folder):
-        targetPath = self.create_folder(folder)
-        open_file_or_folder(targetPath)
-
-    def create_action_slots(self):
-        """
-        Creates actions slots.
-        """
-        self.otherCommandsAction.triggered.connect(lambda: self.otherCommands.show())
-        self.configurationAction.triggered.connect(lambda: self.configuration.show())
-        self.aboutAlgobotAction.triggered.connect(lambda: self.about.show())
-        self.liveStatisticsAction.triggered.connect(lambda: self.show_statistics(0))
-        self.simulationStatisticsAction.triggered.connect(lambda: self.show_statistics(1))
-        self.openBacktestResultsFolderAction.triggered.connect(lambda: self.open_folder("Backtest Results"))
-        self.openLogFolderAction.triggered.connect(lambda: self.open_folder("Logs"))
-        self.openCsvFolderAction.triggered.connect(lambda: self.open_folder('CSV'))
-        self.openDatabasesFolderAction.triggered.connect(lambda: self.open_folder('Databases'))
-        self.openCredentialsFolderAction.triggered.connect(lambda: self.open_folder('Credentials'))
-        self.openConfigurationsFolderAction.triggered.connect(lambda: self.open_folder('Configuration'))
-        self.sourceCodeAction.triggered.connect(lambda: webbrowser.open("https://github.com/ZENALC/algobot"))
-        self.tradingViewLiveAction.triggered.connect(lambda: self.open_trading_view(LIVE))
-        self.tradingViewSimulationAction.triggered.connect(lambda: self.open_trading_view(SIMULATION))
-        self.tradingViewBacktestAction.triggered.connect(lambda: self.open_trading_view(BACKTEST))
-        self.tradingViewHomepageAction.triggered.connect(lambda: self.open_trading_view(None))
-        self.binanceHomepageAction.triggered.connect(lambda: self.open_binance(None))
-        self.binanceLiveAction.triggered.connect(lambda: self.open_binance(LIVE))
-        self.binanceSimulationAction.triggered.connect(lambda: self.open_binance(SIMULATION))
-        self.binanceBacktestAction.triggered.connect(lambda: self.open_binance(BACKTEST))
 
     def get_preferred_symbol(self) -> Union[None, str]:
         """
@@ -1433,7 +1100,7 @@ class Interface(QMainWindow):
                 trade.append(item.text())
             trades.append(trade)
 
-        path = self.create_folder("Trade History")
+        path = create_folder("Trade History")
 
         if caller == SIMULATION:
             defaultFile = os.path.join(path, 'live_trades.csv')
@@ -1457,7 +1124,7 @@ class Interface(QMainWindow):
         """
         table = self.interfaceDictionary[caller]['mainInterface']['historyTable']
         label = self.interfaceDictionary[caller]['mainInterface']['historyLabel']
-        path = self.create_folder("Trade History")
+        path = create_folder("Trade History")
         path, _ = QFileDialog.getOpenFileName(self, 'Import Trades', path, "CSV (*.csv)")
 
         try:
@@ -1465,81 +1132,11 @@ class Interface(QMainWindow):
                 rows = f.readlines()
                 for row in rows:
                     row = row.strip().split(',')
-                    self.add_to_table(table, row, insertDate=False)
+                    add_to_table(table, row, insertDate=False)
             label.setText("Imported trade history successfully.")
         except Exception as e:
             label.setText("Could not import trade history due to data corruption or no file being selected.")
             self.logger.exception(str(e))
-
-    # noinspection DuplicatedCode
-    def create_bot_slots(self):
-        """
-        Creates bot slots.
-        """
-        self.runBotButton.clicked.connect(lambda: self.initiate_bot_thread(caller=LIVE))
-        self.endBotButton.clicked.connect(lambda: self.end_bot_thread(caller=LIVE))
-        self.configureBotButton.clicked.connect(self.show_main_settings)
-        self.forceLongButton.clicked.connect(lambda: self.force_long(LIVE))
-        self.forceShortButton.clicked.connect(lambda: self.force_short(LIVE))
-        self.pauseBotButton.clicked.connect(lambda: self.pause_or_resume_bot(LIVE))
-        self.exitPositionButton.clicked.connect(lambda: self.exit_position(LIVE, True))
-        self.waitOverrideButton.clicked.connect(lambda: self.exit_position(LIVE, False))
-        self.enableCustomStopLossButton.clicked.connect(lambda: self.set_custom_stop_loss(LIVE, True))
-        self.disableCustomStopLossButton.clicked.connect(lambda: self.set_custom_stop_loss(LIVE, False))
-        self.clearTableButton.clicked.connect(lambda: self.clear_table(self.activityMonitor))
-        self.clearLiveTradesButton.clicked.connect(lambda: self.clear_table(self.historyTable))
-        self.exportLiveTradesButton.clicked.connect(lambda: self.export_trades(caller=LIVE))
-        self.importLiveTradesButton.clicked.connect(lambda: self.import_trades(caller=LIVE))
-
-    # noinspection DuplicatedCode
-    def create_simulation_slots(self):
-        """
-        Creates simulation slots.
-        """
-        self.runSimulationButton.clicked.connect(lambda: self.initiate_bot_thread(caller=SIMULATION))
-        self.endSimulationButton.clicked.connect(lambda: self.end_bot_thread(caller=SIMULATION))
-        self.configureSimulationButton.clicked.connect(self.show_simulation_settings)
-        self.forceLongSimulationButton.clicked.connect(lambda: self.force_long(SIMULATION))
-        self.forceShortSimulationButton.clicked.connect(lambda: self.force_short(SIMULATION))
-        self.pauseBotSimulationButton.clicked.connect(lambda: self.pause_or_resume_bot(SIMULATION))
-        self.exitPositionSimulationButton.clicked.connect(lambda: self.exit_position(SIMULATION, True))
-        self.waitOverrideSimulationButton.clicked.connect(lambda: self.exit_position(SIMULATION, False))
-        self.enableSimulationCustomStopLossButton.clicked.connect(lambda: self.set_custom_stop_loss(SIMULATION, True))
-        self.disableSimulationCustomStopLossButton.clicked.connect(lambda: self.set_custom_stop_loss(SIMULATION, False))
-        self.clearSimulationTableButton.clicked.connect(lambda: self.clear_table(self.simulationActivityMonitor))
-        self.clearSimulationTradesButton.clicked.connect(lambda: self.clear_table(self.simulationHistoryTable))
-        self.exportSimulationTradesButton.clicked.connect(lambda: self.export_trades(caller=SIMULATION))
-        self.importSimulationTradesButton.clicked.connect(lambda: self.import_trades(caller=SIMULATION))
-
-    def create_backtest_slots(self):
-        """
-        Creates backtest slots.
-        """
-        self.configureBacktestButton.clicked.connect(self.show_backtest_settings)
-        self.runBacktestButton.clicked.connect(self.initiate_backtest)
-        self.endBacktestButton.clicked.connect(self.end_backtest_thread)
-        self.clearBacktestTableButton.clicked.connect(lambda: self.clear_table(self.backtestTable))
-        self.viewBacktestsButton.clicked.connect(lambda: self.open_folder("Backtest Results"))
-        self.backtestResetCursorButton.clicked.connect(self.reset_backtest_cursor)
-
-    def create_interface_slots(self):
-        """
-        Creates interface slots.
-        """
-        self.create_bot_slots()
-        self.create_simulation_slots()
-        self.create_backtest_slots()
-
-        # Other buttons in interface.
-        self.refreshNewsButton.clicked.connect(self.news_thread)
-
-    def initiate_slots(self):
-        """
-        Initiates all interface slots.
-        """
-        self.create_action_slots()
-        self.create_configuration_slots()
-        self.create_interface_slots()
 
     def create_popup_and_emit_message(self, caller: int, message: str):
         """
@@ -1556,51 +1153,6 @@ class Interface(QMainWindow):
         :param msg: Message provided.
         """
         QMessageBox.about(self, 'Warning', msg)
-
-    def set_dark_mode(self):
-        """
-        Switches interface to a dark theme.
-        """
-        app.setPalette(dark_palette())
-        for graph in self.graphs:
-            graph = graph['graph']
-            graph.setBackground('k')
-
-    def set_light_mode(self):
-        """
-        Switches interface to a light theme.
-        """
-        app.setPalette(light_palette())
-        for graph in self.graphs:
-            graph = graph['graph']
-            graph.setBackground('w')
-
-    def set_bloomberg_mode(self):
-        """
-        Switches interface to bloomberg theme.
-        """
-        app.setPalette(bloomberg_palette())
-        for graph in self.graphs:
-            graph = graph['graph']
-            graph.setBackground('k')
-
-    def set_bear_mode(self):
-        """
-        Sets bear mode color theme. Theme is red and black mimicking a red day.
-        """
-        app.setPalette(red_palette())
-        for graph in self.graphs:
-            graph = graph['graph']
-            graph.setBackground('k')
-
-    def set_bull_mode(self):
-        """
-        Sets bull mode color theme. Theme is green and black mimicking a green day.
-        """
-        app.setPalette(green_palette())
-        for graph in self.graphs:
-            graph = graph['graph']
-            graph.setBackground('k')
 
     def get_lower_interval_data(self, caller: int) -> Data:
         """

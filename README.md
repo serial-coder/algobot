@@ -6,11 +6,22 @@ Cryptocurrency trading bot that allows users to create strategies and then backt
 
 Please make sure you have an installation of at least Python 3.6.
 
+For Linux/MacOS:
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+For Windows:
+```bash
+python -m venv venv
+call venv/Scripts/activate
+pip install -r requirements.txt
+```
+
+If your install fails, please make sure to have [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2019) installed.
 
 # Execution
 
@@ -24,7 +35,9 @@ To run Algobot, run `python -m algobot` from within the activated virtual enviro
 • Run custom backtests with parameters configured.\
 • Run live bots with parameters configured.\
 • Telegram integration that allows users to trade or view statistics.\
-• Create custom, trailing, or limit stop losses.
+• Create custom, trailing, or limit stop losses.\
+• Create take profits.\
+• Ability to create your own custom strategies.
 
 # User Interface
 
@@ -49,17 +62,21 @@ Mihir Shrestha
 
 koutsie, Malachi Soord (inverse)
 
+# Wiki
+
+You can find documentation regarding Algobot [here](https://github.com/ZENALC/algobot/wiki).
+
 # Special Contributors
 
 Peter Motin for being the founder and head of strategic development throughout the entirety of this project.
 
 # Contribution
 
-The project is open-source. Please feel free to support it. Supporters are always welcome.
+The project is open-source. Please feel free to support it as supporters are always welcome.
 
 # Feature Requests
 
-For any feature requests, feel free to add a feature request through Github's Issues. I would love to hear your ideas and implement them on the application.
+For any feature requests, feel free to add a feature request through Github's Issues. We would love to hear your ideas and implement them on the application.
 
 # Compatibility
 

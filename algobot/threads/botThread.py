@@ -7,7 +7,7 @@ from PyQt5.QtCore import QObject, QRunnable, pyqtSignal, pyqtSlot
 import algobot.helpers as helpers
 from algobot.data import Data
 from algobot.enums import BEARISH, BULLISH, LIVE, SIMULATION
-from algobot.telegramBot import TelegramBot
+from algobot.telegram_bot import TelegramBot
 from algobot.traders.realtrader import RealTrader
 from algobot.traders.simulationtrader import SimulationTrader
 
@@ -262,10 +262,7 @@ class BotThread(QRunnable):
         trader: SimulationTrader = self.gui.get_trader(caller)
         trader.dataView.get_current_data()
         trader.currentPrice = trader.dataView.current_values['close']
-        if trader.longTrailingPrice is not None and trader.currentPrice > trader.longTrailingPrice:
-            trader.longTrailingPrice = trader.currentPrice
-        if trader.shortTrailingPrice is not None and trader.currentPrice < trader.shortTrailingPrice:
-            trader.shortTrailingPrice = trader.currentPrice
+        trader.handle_trailing_prices()
 
     def handle_logging(self, caller):
         """
@@ -483,8 +480,8 @@ class BotThread(QRunnable):
 
         if trader:
             trader.completedLoop = True  # If false, this will cause an infinite loop.
-            if trader == self.gui.simulationTrader:
-                trader.get_simulation_result()
+            isSimulation = trader == self.gui.simulationTrader
+            trader.get_run_result(isSimulation=isSimulation)
 
         if self.failLimit == self.failCount or self.failed or not success:
             self.signals.error.emit(self.caller, str(self.failError))
